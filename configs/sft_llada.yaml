@@ -4,25 +4,25 @@ wandb:
 
 
 experiment:
-    project: "sft_llada" # need to be same of this file name
-    num_node: 4 # the number of machines you have
+    project: "try_sft_llada_26-02-13" # need to be same of this file name
+    num_node: 1 # the number of machines you have
 
 
 model:
-    pretrained_model: "/abs/path/of/model" # absolute path of your model
-    optimized_name: ""optimized" # the output name for your optimized model, will be saved under sft_llada/ckpt
+    pretrained_model: "/scratch/aszalay1/tianze/models/llada_8b_instruct" # absolute path of your model
+    optimized_name: "llada_8b_instruct_sft_openthoughts" # the output name for your optimized model, will be saved under sft_llada/ckpt
 
 # sft dataset
 dataset:
-    optimization_data: "dataset_name" # "sft_openr1math_llada"
+    optimization_data: "datasets/openthoughts/openthoughts_sft_0" # "sft_openr1math_llada"
 
 training:
-    gradient_checkpointing_enable: False # if the sequence is very larger, set as True
-    gradient_accumulation_steps: 2
-    batch_size_lm: 2 # the total batch size is num_node * num_gpu_per_node * gradient_accumulation_steps * batch_size_lm
+    gradient_checkpointing_enable: False # if the sequence is very large, set as True
+    gradient_accumulation_steps: 8
+    batch_size_lm: 1 # the total batch size is num_node * num_gpu_per_node * gradient_accumulation_steps * batch_size_lm
     mixed_precision: "bf16"
     enable_tf32: True
-    seed: 10086
+    seed: 32
     num_train_epochs: 1
     max_grad_norm: 1
     method: "random_masking" # "random_masking""semi-ar"
@@ -31,8 +31,8 @@ training:
     block_size: 16 # use for semi-ar
     mask_times_per_sample: 1 # for random_masking
     post_num: 0 # number of pad token need to be trained for each data point
-    max_gen_length: 1024
-    max_prompt_len: 784
+    max_gen_length: 4096
+    max_prompt_len: 2048
 
 
 

@@ -85,7 +85,7 @@ def main():
     accelerator = Accelerator(
         gradient_accumulation_steps=config.training.gradient_accumulation_steps,
         mixed_precision=config.training.mixed_precision,
-        log_with=None,
+        log_with="wandb",
         project_dir=config.experiment.logging_dir,
         split_batches=True,
     )
@@ -473,6 +473,10 @@ def main():
                     labels=labels,
                     p_mask_lm=p_mask_lm
                 )
+            
+            # Record unscaled loss for logging
+            step_loss = loss_lm.detach().float()
+
             loss_lm = loss_lm / accelerator.gradient_accumulation_steps
             if step <= 10:
                 print(loss_lm)
@@ -486,6 +490,11 @@ def main():
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
+
+                accelerator.log({
+                    "loss": step_loss.item(),
+                    "lr": lr_scheduler.get_last_lr()[0]
+                }, step=step)
 
                 del input_ids, labels, p_mask_lm
                 torch.cuda.empty_cache()
