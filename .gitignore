@@ -1,0 +1,48 @@
+# Python internals
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Logs
+*.log
+logs/
+wandb/
+
+# Datasets
+data/images/
+data/*.json
+data/*.zip
+data/*.tar
+data/*.tar.gz
+data/*.pkl
+**/datasets/
+# Keep scripts and documentation in data/
+!data/*.py
+!data/readme.md
+!data/*.ipynb
+
+# Model Weights and Checkpoints
+*.pth
+*.pt
+*.bin
+*.ckpt
+*.safetensors
+ckpt/
+checkpoints/
+
+# IDE settings
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
