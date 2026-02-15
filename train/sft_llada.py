@@ -71,7 +71,6 @@ def main():
     #########################
     config = get_config()
 
-    project_name = config.experiment.project
     pretrained_model = config.model.pretrained_model
 
     
@@ -112,7 +111,6 @@ def main():
         run_name = config.wandb.get("run_name", None)
 
         wandb_init_kwargs = dict(
-            project=project_name,
             name=run_name,
             id=run_id,
             resume=resume_wandb_run,
