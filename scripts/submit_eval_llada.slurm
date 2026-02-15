@@ -2,7 +2,7 @@
 #SBATCH --job-name=sft_llada
 #SBATCH --partition=a100
 #SBATCH --account=aszalay1_ssci
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=24
 #SBATCH --time=24:00:00
 
@@ -20,7 +20,7 @@ cd /scratch/aszalay1/tianze/L-dLLM
 source .venv/bin/activate
 
 # Ensure we use the allocated GPUs
-export CUDA_VISIBLE_DEVICES=0
+export CUDA_VISIBLE_DEVICES=0,1
 
 # run script
 EVAL_CONFIG="configs/llada_eval.yaml"
