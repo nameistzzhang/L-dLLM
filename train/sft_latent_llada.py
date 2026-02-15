@@ -52,12 +52,24 @@ def main():
 
     logger.info("Loading models, tokenizer and optimizer")
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    
-    # 使用 from_pretrained 直接加载，strict=False 会忽略不匹配的键（如新增的 time_mlp 等）
-    # 这样既能加载预训练权重，又能自动处理分片、safetensors/bin 格式兼容性
-    model = LatentLLaDAModelLM.from_pretrained(model_path, strict=False)
-    
-    logger.info("All weights loaded (with strict=False). New layers remain randomized.")
+    config = LLaDAConfig.from_pretrained(model_path)
+    model = LatentLLaDAModelLM(config)
+
+    index_file = os.path.join(model_path, "model.safetensors.index.json")
+    with open(index_file, "r") as f:
+        index = json.load(f)
+
+    weight_files = set(index["weight_map"].values())
+
+    for f_name in weight_files:
+        f_path = os.path.join(model_path, f_name)
+        state_dict = load_file(f_path) # 加载 safetensors
+        
+        # 使用 strict=False 注入，这样新增的层会保持随机初始化
+        model.load_state_dict(state_dict, strict=False)
+        print(f"Loaded {f_name}")
+
+    print("All weights loaded (with strict=False). New layers remain randomized.")
 
 if __name__ == "__main__":
     main()
