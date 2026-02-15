@@ -109,11 +109,9 @@ def main():
             resume_wandb_run = False
             run_id = wandb.util.generate_id()
             config.wandb.run_id = run_id
-        run_name = config.wandb.get("run_name", None)
 
         wandb_init_kwargs = dict(
-            project=project_name,
-            name=run_name,
+            name=config.experiment.project,
             id=run_id,
             resume=resume_wandb_run,
             entity=config.wandb.get("entity", None),
@@ -480,7 +478,8 @@ def main():
             step_loss = loss_lm.detach().float()
 
             loss_lm = loss_lm / accelerator.gradient_accumulation_steps
-            print(loss_lm)
+            if step <= 10:
+                print(loss_lm)
             accelerator.backward(loss_lm)
 
             if (step + 1) % accelerator.gradient_accumulation_steps == 0:

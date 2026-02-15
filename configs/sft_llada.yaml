@@ -1,10 +1,11 @@
 wandb:
   entity: null
   resume: 'auto'
+  run_name: "try_sft_llada_26-02-15" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
-    project: "try_sft_llada_26-02-13" # need to be same of this file name
+    project: "L-dLLM-sft-LLaDA-training" # need to be same of this file name
     num_node: 1 # the number of machines you have
 
 
