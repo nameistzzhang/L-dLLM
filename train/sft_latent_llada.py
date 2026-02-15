@@ -69,3 +69,6 @@ def main():
         print(f"Loaded {f_name}")
 
     print("All weights loaded (with strict=False). New layers remain randomized.")
+
+if __name__ == "__main__":
+    main()
