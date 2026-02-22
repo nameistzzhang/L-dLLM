@@ -1,7 +1,7 @@
 wandb:
     entity: null
     resume: 'auto'
-    run_name: "try_sft_llada_26-02-15" # the name of this run in wandb, can be different from experiment.project
+    run_name: "try_sft_latent_iter_warmup_26-02-22" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
