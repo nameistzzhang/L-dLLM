@@ -2,7 +2,7 @@
 #SBATCH --job-name=sft_llada
 #SBATCH --partition=h100
 #SBATCH --account=aszalay1_ssci
-#SBATCH --gres=gpu:8
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
 #SBATCH --time=24:00:00
 
@@ -20,12 +20,12 @@ cd /scratch/aszalay1/tianze/L-dLLM
 source .venv/bin/activate
 
 # Ensure we use the allocated GPUs
-export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 # run script
-# Using the configuration for 1 node with 8 GPUs (matching the SBATCH request)
+# Using the configuration for 1 node with 4 GPUs (matching the SBATCH request)
 # Ensure the accelerate config matches the resources requested
-ACCELERATE_CONFIG="accelerate_configs/1_node_8_gpus_deepspeed_zero2.yaml"
+ACCELERATE_CONFIG="accelerate_configs/1_node_4_gpus_deepspeed_zero2.yaml"
 SCRIPT="train/sft_llada.py"
 CONFIG="configs/sft_llada.yaml"
 
