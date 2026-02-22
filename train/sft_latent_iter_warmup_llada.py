@@ -5,8 +5,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "true"
 import json
 import logging
 import math
-import shutil
-import time
+import datetime
 from pathlib import Path
 from omegaconf import OmegaConf
 import wandb
@@ -63,7 +62,14 @@ def main():
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = False
 
-    config.experiment.logging_dir = str(Path(config.experiment.project) / "logs") # set logging dir to project/logs for accelerator tracking    
+    # Initialize wandb run name if not present
+    if config.wandb.get("run_name") is None:
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        config.wandb.run_name = f"run_{timestamp}"
+    
+    # Create output directory based on project and run name
+    config.experiment.output_dir = str(Path(config.experiment.project) / config.wandb.run_name)
+    config.experiment.logging_dir = str(Path(config.experiment.output_dir) / "logs")
 
     accelerator = Accelerator(
         gradient_accumulation_steps=config.training.gradient_accumulation_steps,
@@ -87,8 +93,8 @@ def main():
         set_verbosity_error()
 
     if accelerator.is_main_process: # save configuration into project folder for reproducibility
-        os.makedirs(config.experiment.project, exist_ok=True)
-        config_path = Path(config.experiment.project) / "config.yaml"
+        os.makedirs(config.experiment.output_dir, exist_ok=True)
+        config_path = Path(config.experiment.output_dir) / "config.yaml"
         logging.info(f"Saving config to {config_path}")
         OmegaConf.save(config, config_path)
 
@@ -302,7 +308,7 @@ def main():
             path = config.experiment.resume_from_checkpoint
         else:
             # Get the most recent checkpoint
-            dirs = [d for d in Path(config.experiment.project).iterdir() if d.is_dir() and d.name.startswith("checkpoint")]
+            dirs = [d for d in Path(config.experiment.output_dir).iterdir() if d.is_dir() and d.name.startswith("checkpoint")]
             dirs.sort(key=lambda x: os.path.getmtime(x))
             path = dirs[-1] if dirs else None
 
@@ -438,7 +444,7 @@ def main():
             torch.cuda.empty_cache()
 
         # Save checkpoint at the end of each epoch
-        output_dir = Path(config.experiment.project) / f"checkpoint-epoch-{epoch+1}"
+        output_dir = Path(config.experiment.output_dir) / f"checkpoint-epoch-{epoch+1}"
         accelerator.save_state(output_dir)
         if accelerator.is_main_process:
             unwrapped_model = accelerator.unwrap_model(model)
