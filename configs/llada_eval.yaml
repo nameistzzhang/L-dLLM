@@ -1,5 +1,5 @@
 experiment:
-    project: "L-dLLM-evaluation-logs" # need to be same of this file name
+    project: "llada_eval" # need to be same of this file name
     run_name: "llada_8b_instruct_pure_diff" # the name of the evaluation task
     num_node: 1 # the number of machines you have
     node_index: 0 # no need to change
