@@ -1,12 +1,12 @@
 experiment:
-    project: "llada_eval" # need to be same of this file name
-    run_name: "llada_8b_instruct_pure_diff" # the name of the evaluation task
+    project: "llada_eval" # ! need to be same of this file name
+    run_name: "llada_8b_instruct_itersmooth_pure_diff" # the name of the evaluation task
     num_node: 1 # the number of machines you have
     node_index: 0 # no need to change
 
 
 model: "/scratch/aszalay1/tianze/models/llada_8b_instruct" # absolute path of your model
-model_base: "llada" # set llada for LLaDA and MMaDA
+model_base: "llada_itersmooth" # set llada for LLaDA and MMaDA
 
 # dataset you want to eval on, you need to download first, you can also modify your own dataset, see instructions in ./data
 dataset:

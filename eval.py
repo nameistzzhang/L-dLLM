@@ -39,6 +39,14 @@ if __name__ == "__main__":
                 cwd='sample',
                 check=True,
             )
+        elif model_base == "llada_itersmooth":
+            subprocess.run(
+                f'python llada_itersmooth_sample.py '
+                f'config=../configs/{project_name}.yaml ',
+                shell=True,
+                cwd='sample',
+                check=True,
+            )
         elif model_base == "sdar":
             subprocess.run(
                 f'python sdar_sample.py '
