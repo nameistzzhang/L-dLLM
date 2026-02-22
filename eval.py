@@ -14,6 +14,7 @@ if __name__ == "__main__":
     config = get_config()
 
     project_name = config.experiment.project
+    run_name = config.experiment.run_name
     eval_type = config.dataset.data_type
 
     def begin_with(file_name):
@@ -77,7 +78,7 @@ if __name__ == "__main__":
     
     
     
-    os.makedirs(f"{project_name}/results", exist_ok=True)
+    os.makedirs(f"{project_name}/{run_name}/results", exist_ok=True)
     
     
     sample(config.model_base)

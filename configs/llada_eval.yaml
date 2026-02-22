@@ -1,5 +1,6 @@
 experiment:
-    project: "llada_eval" # need to be same of this file name
+    project: "L-dLLM-evaluation-logs" # need to be same of this file name
+    run_name: "llada_8b_instruct_pure_diff" # the name of the evaluation task
     num_node: 1 # the number of machines you have
     node_index: 0 # no need to change
 
@@ -24,7 +25,7 @@ rollout:
     remasking_strategy: "low_confidence_dynamic" #"low_confidence_static""low_confidence_dynamic"
     target: "confidence" # target to decide which tokens to unmask, eg. confidence, margin_confidence and neg_entropy
     dynamic_threshold: 0.95 # no use for "low_confidence_static"
-    block_size: 32
+    block_size: 1024
     further_horizon: 128 # We find that performing the forward pass with a further horizon, eg. 128, (kv-cache sequence before current block, while doing full forward for currect [block_size + further_horizon] length sequence) yields competitive performance to running without KV-cache. Balances speed and performance.
     output_unmasking_history: True
     use_cache: True
