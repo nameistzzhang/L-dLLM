@@ -296,6 +296,7 @@ def main():
     
     # * ---- Resume from checkpoint ----
     first_epoch = 0
+    global_update_step = 0
     if config.experiment.get("resume_from_checkpoint"):
         if config.experiment.resume_from_checkpoint != "latest":
             path = config.experiment.resume_from_checkpoint
@@ -313,6 +314,12 @@ def main():
                 try:
                     first_epoch = int(str(path).split("checkpoint-epoch-")[-1])
                     logger.info(f"Resuming from epoch {first_epoch}")
+                    
+                    # Calculate global_update_step based on resumed epoch
+                    steps_per_epoch = len(train_dataloader_lm) // config.training.gradient_accumulation_steps
+                    global_update_step = first_epoch * steps_per_epoch
+                    logger.info(f"Resuming global step from {global_update_step}")
+                    
                 except ValueError:
                     logger.warning(f"Could not parse epoch from checkpoint path: {path}")
 
@@ -345,6 +352,11 @@ def main():
         safe_labels = labels.clone()
         safe_labels[labels == -100] = 0
 
+        # Calculate accuracy
+        preds = torch.argmax(logits, dim=-1) # (B, T)
+        correct_mask = (preds == safe_labels) & p_mask_lm
+        accuracy = correct_mask.sum().float() / p_mask_lm.sum().clamp(min=1).float()
+
         log_probs = F.log_softmax(logits, dim=-1)   # (B, T, V)
         logp_tok = log_probs.gather(dim=-1, index=safe_labels.unsqueeze(-1)).squeeze(-1)     # (B, T)
         loss_lm = - (logp_tok * p_mask_lm).sum(dim=1)
@@ -353,10 +365,14 @@ def main():
         loss_lm = loss_lm / mask_num
     
         loss_lm = loss_lm.sum() / B
-        return loss_lm
+        return loss_lm, accuracy
 
 
     # * ---- training loop ----
+    # Counter for actual optimizer updates (Global Steps) is initialized before checkpoint loading
+    if global_update_step is None:
+        global_update_step = 0
+    
     for epoch in range(first_epoch, num_train_epochs):
         
         model.train()
@@ -369,27 +385,35 @@ def main():
             leave=True          
         )
         
+        loss_meter = AverageMeter()
+        acc_meter = AverageMeter()
+
         for step, batch in enumerate(progress_bar, start=1):
-            global_step = epoch * len(train_dataloader_lm) + step
+            # Count total micro-steps processed
+            total_micro_step = epoch * len(train_dataloader_lm) + step
             
             input_ids = batch["input_ids"].to(accelerator.device)
             labels    = batch["labels"].to(accelerator.device)
             p_mask_lm = batch["p_mask_lm"].to(accelerator.device)
 
             # Accumulate gradients manually
-            loss_lm = forward_process(
+            loss_lm, acc = forward_process(
                 input_ids=input_ids,
                 labels=labels,
                 p_mask_lm=p_mask_lm
             )
             
-            # Record unscaled loss for logging
-            step_loss = loss_lm.detach().float()
-
+            # Record unscaled loss & accuracy for logging
+            loss_meter.update(loss_lm.item())
+            acc_meter.update(acc.item())
+            
             loss_lm = loss_lm / accelerator.gradient_accumulation_steps
             accelerator.backward(loss_lm)
 
-            if global_step % accelerator.gradient_accumulation_steps == 0: # update model parameters and log training info
+            if total_micro_step % accelerator.gradient_accumulation_steps == 0: # update model parameters and log training info
+                # Increment global update step
+                global_update_step += 1
+
                 if config.training.max_grad_norm is not None:
                     accelerator.clip_grad_norm_(model.parameters(),
                                                 config.training.max_grad_norm)
@@ -399,14 +423,18 @@ def main():
                 optimizer.zero_grad(set_to_none=True)
 
                 if accelerator.is_local_main_process:
-                   print(loss_lm)
+                   print(f"Global Step {global_update_step} | Loss: {loss_meter.avg:.4f} | Acc: {acc_meter.avg:.4f}")
 
                 accelerator.log({
-                    "loss": step_loss.item(),
+                    "loss": loss_meter.avg,
+                    "accuracy": acc_meter.avg,
                     "lr": lr_scheduler.get_last_lr()[0]
-                }, step=global_step)
+                }, step=global_update_step)
+                
+                loss_meter.reset()
+                acc_meter.reset()
             
-            del input_ids, labels, p_mask_lm # release memory
+            del input_ids, labels, p_mask_lm, loss_lm, acc # release memory
             torch.cuda.empty_cache()
 
         # Save checkpoint at the end of each epoch
@@ -424,7 +452,8 @@ def main():
             tokenizer.save_pretrained(output_dir)
         logger.info(f"Epoch {epoch+1} checkpoint saved to {output_dir}")
 
-    accelerator.wait_for_everyone()
+        accelerator.wait_for_everyone() # Ensure all processes have finished saving before starting next epoch or ending
+
     accelerator.end_training()
 
 

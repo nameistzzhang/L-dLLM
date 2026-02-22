@@ -5,7 +5,7 @@ wandb:
 
 
 experiment:
-    project: "L-dLLM-sft-LLaDA-training" # need to be same of this file name
+    project: "L-dLLM-training-logs" # need to be same of this file name
     num_node: 1 # the number of machines you have
 
 
