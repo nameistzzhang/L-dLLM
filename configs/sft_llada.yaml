@@ -15,7 +15,7 @@ model:
 
 # sft dataset
 dataset:
-    optimization_data: "datasets/openthoughts/openthoughts_sft_0" # "sft_openr1math_llada"
+    optimization_data: "/openthoughts/openthoughts_sft_0" # "sft_openr1math_llada"
 
 training:
     gradient_checkpointing_enable: False # if the sequence is very large, set as True
