@@ -74,7 +74,8 @@ def generate_with_prefix_cache(
     nfe = 0
     hist: List[torch.Tensor] = []
     
-    last_hidden_state = None  # To store the hidden state from the previous forward pass
+    last_logits = None  # To store the logits from the previous forward pass
+    weight = 0.2        # Hardcoded default weight
 
     for blk in range(num_blocks):
         s, e = L0 + blk * block_length, L0 + (blk + 1) * block_length
@@ -88,13 +89,31 @@ def generate_with_prefix_cache(
 
         # first full forward to build prefix cache
         if use_cache:
-            # Prepare inputs with previous hidden state
+            # Prepare inputs with previous logits
             inputs_embeds = model.get_input_embeddings()(x)
-            if last_hidden_state is not None:
-                inputs_embeds += last_hidden_state
+            if last_logits is not None:
+                is_mask = (x == mask_id)
+                if is_mask.any():
+                    # Optimize: Only compute softmax and matmul for masked tokens
+                    # (B, L) -> (N_mask,)
+                    mask_indices = torch.nonzero(is_mask, as_tuple=True)
+                    
+                    # Select logits for masked positions: (N_mask, V)
+                    masked_logits = last_logits[mask_indices]
+                    
+                    # Compute expected embeddings only for masked positions
+                    probs = F.softmax(masked_logits.to(torch.float32), dim=-1).to(inputs_embeds.dtype)
+                    vocab_embeds = model.get_input_embeddings().weight
+                    expected_embeds = torch.matmul(probs, vocab_embeds)
+                    
+                    mask_embed = vocab_embeds[mask_id]
+                    new_mask_embeds = expected_embeds * weight + mask_embed * (1 - weight)
+                    
+                    # Update input embeddings
+                    inputs_embeds[mask_indices] = new_mask_embeds
             
-            out = model(inputs_embeds=inputs_embeds, use_cache=True, output_hidden_states=True)
-            last_hidden_state = out.hidden_states[-1].clone()
+            out = model(inputs_embeds=inputs_embeds, use_cache=True)
+            last_logits = out.logits.clone()
             
             pkv = out.past_key_values
             # chop prefix out of past_kv to keep cache small
@@ -104,11 +123,23 @@ def generate_with_prefix_cache(
             pkv = new_pkv
         else:
             inputs_embeds = model.get_input_embeddings()(x)
-            if last_hidden_state is not None:
-                inputs_embeds += last_hidden_state
+            if last_logits is not None:
+                is_mask = (x == mask_id)
+                if is_mask.any():
+                     # Optimize: Only compute softmax and matmul for masked tokens
+                    mask_indices = torch.nonzero(is_mask, as_tuple=True)
+                    masked_logits = last_logits[mask_indices]
+                    
+                    probs = F.softmax(masked_logits.to(torch.float32), dim=-1).to(inputs_embeds.dtype)
+                    vocab_embeds = model.get_input_embeddings().weight
+                    expected_embeds = torch.matmul(probs, vocab_embeds)
+                    
+                    mask_embed = vocab_embeds[mask_id]
+                    new_mask_embeds = expected_embeds * weight + mask_embed * (1 - weight)
+                    inputs_embeds[mask_indices] = new_mask_embeds
                 
-            out = model(inputs_embeds=inputs_embeds, use_cache=False, output_hidden_states=True)
-            last_hidden_state = out.hidden_states[-1].clone()
+            out = model(inputs_embeds=inputs_embeds, use_cache=False)
+            last_logits = out.logits.clone()
         
         mask_all = (x == mask_id)
         mask_all[:, e:] = 0
@@ -142,14 +173,29 @@ def generate_with_prefix_cache(
                 
                 # We need input embeddings for the slice
                 inputs_embeds = model.get_input_embeddings()(x[:, slice_idx])
-                if last_hidden_state is not None:
-                    # Add corresponding slice of last_hidden_state
-                    inputs_embeds += last_hidden_state[:, slice_idx]
+                if last_logits is not None:
+                    is_mask = (x[:, slice_idx] == mask_id)
+                    if is_mask.any():
+                        # Optimize: Only compute for masked tokens
+                        mask_indices = torch.nonzero(is_mask, as_tuple=True)
+                        
+                        # last_logits is full length, so we first slice it then select mask indices
+                        # Note: inputs_embeds is already sliced, so mask_indices are relative to the slice
+                        current_last_logits_slice = last_logits[:, slice_idx]
+                        masked_logits = current_last_logits_slice[mask_indices]
+
+                        probs = F.softmax(masked_logits.to(torch.float32), dim=-1).to(inputs_embeds.dtype)
+                        vocab_embeds = model.get_input_embeddings().weight
+                        expected_embeds = torch.matmul(probs, vocab_embeds)
+                        
+                        mask_embed = vocab_embeds[mask_id]
+                        new_mask_embeds = expected_embeds * weight + mask_embed * (1 - weight)
+                        inputs_embeds[mask_indices] = new_mask_embeds
                 
-                out = model(inputs_embeds=inputs_embeds, past_key_values=pkv, use_cache=True, output_hidden_states=True)
+                out = model(inputs_embeds=inputs_embeds, past_key_values=pkv, use_cache=True)
                 logits = out.logits
                 
-                last_hidden_state[:, slice_idx] = out.hidden_states[-1]
+                last_logits[:, slice_idx] = logits.clone()
 
                 if cgws is not None:
                     x0, tr_idx = get_transfer_index(
@@ -163,13 +209,25 @@ def generate_with_prefix_cache(
                     x[:, s:][tr_idx] = x0[tr_idx]
             else:
                 inputs_embeds = model.get_input_embeddings()(x)
-                if last_hidden_state is not None:
-                    inputs_embeds += last_hidden_state
+                if last_logits is not None:
+                    is_mask = (x == mask_id)
+                    if is_mask.any():
+                        # Optimize: Only compute for masked tokens
+                        mask_indices = torch.nonzero(is_mask, as_tuple=True)
+                        masked_logits = last_logits[mask_indices]
+                        
+                        probs = F.softmax(masked_logits.to(torch.float32), dim=-1).to(inputs_embeds.dtype)
+                        vocab_embeds = model.get_input_embeddings().weight
+                        expected_embeds = torch.matmul(probs, vocab_embeds)
+                        
+                        mask_embed = vocab_embeds[mask_id]
+                        new_mask_embeds = expected_embeds * weight + mask_embed * (1 - weight)
+                        inputs_embeds[mask_indices] = new_mask_embeds
                 
-                out = model(inputs_embeds=inputs_embeds, use_cache=False, output_hidden_states=True)
+                out = model(inputs_embeds=inputs_embeds, use_cache=False)
                 logits = out.logits
 
-                last_hidden_state = out.hidden_states[-1].clone()
+                last_logits = logits.clone()
 
                 if cgws is not None:
                     logits = logits[:, window_slice]
