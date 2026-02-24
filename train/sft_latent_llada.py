@@ -49,7 +49,6 @@ def main():
 
     model_path = config.model.pretrained_model
 
-
     logger.info("Loading models, tokenizer and optimizer")
     tokenizer = AutoTokenizer.from_pretrained(model_path)
     config = LLaDAConfig.from_pretrained(model_path)

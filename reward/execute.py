@@ -307,15 +307,16 @@ def evaluate_stdio_dataset(data: list[dict], num_chunks: int):
 def main():
     cfg          = get_config()
     project_name = cfg.experiment.project
+    run_name     = cfg.experiment.run_name
     outputs_name = "eval-" + cfg.model.replace("/", ".") + "-" + cfg.dataset.eval_dataset
 
     num_node = cfg.experiment.num_node
     node_index = cfg.experiment.node_index
 
     if num_node > 1:
-        file_name    = f"../{project_name}/temp_data/outputs-{node_index}-{outputs_name}.json"
+        file_name    = f"../{project_name}/{run_name}/temp_data/outputs-{node_index}-{outputs_name}.json"
     else:
-        file_name    = f"../{project_name}/temp_data/outputs-{outputs_name}.json"
+        file_name    = f"../{project_name}/{run_name}/temp_data/outputs-{outputs_name}.json"
 
     with open(file_name, 'r') as f:
         data = json.load(f)

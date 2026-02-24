@@ -14,6 +14,7 @@ if __name__ == "__main__":
     config = get_config()
 
     project_name = config.experiment.project
+    run_name = config.experiment.run_name
     eval_type = config.dataset.data_type
 
     def begin_with(file_name):
@@ -33,6 +34,30 @@ if __name__ == "__main__":
         elif model_base == "llada":
             subprocess.run(
                 f'python llada_sample.py '
+                f'config=../configs/{project_name}.yaml ',
+                shell=True,
+                cwd='sample',
+                check=True,
+            )
+        elif model_base == "llada_itersmooth":
+            subprocess.run(
+                f'python llada_itersmooth_sample.py '
+                f'config=../configs/{project_name}.yaml ',
+                shell=True,
+                cwd='sample',
+                check=True,
+            )
+        elif model_base == "llada_global_itersmooth":
+            subprocess.run(
+                f'python llada_global_itersmooth_sample.py '
+                f'config=../configs/{project_name}.yaml ',
+                shell=True,
+                cwd='sample',
+                check=True,
+            )
+        elif model_base == "llada_latent":
+            subprocess.run(
+                f'python llada_latent_sample.py '
                 f'config=../configs/{project_name}.yaml ',
                 shell=True,
                 cwd='sample',
@@ -77,7 +102,7 @@ if __name__ == "__main__":
     
     
     
-    os.makedirs(f"{project_name}/results", exist_ok=True)
+    os.makedirs(f"{project_name}/{run_name}/results", exist_ok=True)
     
     
     sample(config.model_base)

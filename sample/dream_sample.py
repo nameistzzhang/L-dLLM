@@ -528,6 +528,7 @@ if __name__ == "__main__":
     system_prompts = '''<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nYou need to put your final answer in \\boxed{}. This is the problem:\n{{problem}}<|im_end|>\n<|im_start|>assistant\n'''
     
     project_name = config.experiment.project
+    run_name = config.experiment.run_name
 
     code_eval = False
 
@@ -681,9 +682,9 @@ if __name__ == "__main__":
 
     # output the data
     if num_node > 1:
-        output_file_name = "../" + project_name + f"/temp_data/outputs-{node_index}-" + outputs_name + ".json"
+        output_file_name = "../" + project_name + "/" + run_name + f"/temp_data/outputs-{node_index}-" + outputs_name + ".json"
     else:
-        output_file_name = "../" + project_name + "/temp_data/outputs-" + outputs_name + ".json"
+        output_file_name = "../" + project_name + "/" + run_name + "/temp_data/outputs-" + outputs_name + ".json"
     os.makedirs(os.path.dirname(output_file_name), exist_ok=True)
     with open(output_file_name, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)

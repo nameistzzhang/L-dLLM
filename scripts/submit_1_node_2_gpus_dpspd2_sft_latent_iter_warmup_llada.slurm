@@ -26,8 +26,8 @@ export CUDA_VISIBLE_DEVICES=0,1
 # Using the configuration for 1 node with 2 GPUs (matching the SBATCH request)
 # Ensure the accelerate config matches the resources requested
 ACCELERATE_CONFIG="accelerate_configs/1_node_2_gpus_deepspeed_zero2.yaml"
-SCRIPT="train/sft_latent_llada.py"
-CONFIG="configs/sft_llada.yaml"
+SCRIPT="train/sft_latent_iter_warmup_llada.py"
+CONFIG="configs/sft_latent_iter_warmup.yaml"
 
 echo "Starting training with config: $CONFIG"
 

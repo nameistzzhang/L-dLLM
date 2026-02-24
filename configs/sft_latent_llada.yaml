@@ -5,7 +5,7 @@ wandb:
 
 
 experiment:
-    project: "L-dLLM-latent-sft-LLaDA-training" # need to be same of this file name
+    project: "L-dLLM-training-logs" # need to be same of this file name
     num_node: 1 # the number of machines you have
 
 model:
@@ -14,7 +14,7 @@ model:
 
 # sft dataset
 dataset:
-    optimization_data: "datasets/openthoughts/openthoughts_sft_0" # "sft_openr1math_llada"
+    optimization_data: "/openthoughts/openthoughts_sft_0" # "sft_openr1math_llada"
 
 training:
     gradient_checkpointing_enable: False # if the sequence is very large, set as True

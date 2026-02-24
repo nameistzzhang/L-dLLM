@@ -18,6 +18,7 @@ if __name__ == "__main__":
     config = get_config()
 
     project_name = config.experiment.project
+    run_name = config.experiment.run_name
     
     
     
@@ -26,7 +27,7 @@ if __name__ == "__main__":
     pretrained_model = config.model
 
     outputs_name = "eval-" + pretrained_model.replace("/", ".") + "-" + dataset
-    file_name = "../" + project_name + "/temp_data/outputs-" + outputs_name + ".json"
+    file_name = "../" + project_name + "/" + run_name + "/temp_data/outputs-" + outputs_name + ".json"
 
     with open(file_name, 'r') as f:
         data = json.load(f)
@@ -107,7 +108,7 @@ if __name__ == "__main__":
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-    outputs_result_name = "../" + project_name + "/results/results-" + outputs_name + ".txt"
+    outputs_result_name = "../" + project_name + "/" + run_name + "/results/results-" + outputs_name + ".txt"
     os.makedirs(os.path.dirname(outputs_result_name), exist_ok=True)
     with open(outputs_result_name, "a") as f:
         # Save + print

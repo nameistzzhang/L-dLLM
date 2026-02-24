@@ -1,7 +1,7 @@
 wandb:
     entity: null
     resume: 'auto'
-    run_name: "sft_llada_standard_coreset_3-epochs" # the name of this run in wandb, can be different from experiment.project
+    run_name: "try_sft_latent_iter_warmup_26-02-22" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -24,7 +24,7 @@ training:
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 32
-    num_train_epochs: 3
+    num_train_epochs: 1
     max_grad_norm: 1
     method: "random_masking" # "random_masking""semi-ar"
     lower_p: 0.1

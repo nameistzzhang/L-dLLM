@@ -73,6 +73,9 @@ def generate_with_prefix_cache(
 
     nfe = 0
     hist: List[torch.Tensor] = []
+    
+    last_logits = None  # To store the logits from the previous forward pass
+    weight = 0.2        # Hardcoded default weight
 
     for blk in range(num_blocks):
         s, e = L0 + blk * block_length, L0 + (blk + 1) * block_length
@@ -86,7 +89,32 @@ def generate_with_prefix_cache(
 
         # first full forward to build prefix cache
         if use_cache:
-            out = model(x, use_cache=True)
+            # Prepare inputs with previous logits
+            inputs_embeds = model.get_input_embeddings()(x)
+            if last_logits is not None:
+                is_mask = (x == mask_id)
+                if is_mask.any():
+                    # Optimize: Only compute softmax and matmul for masked tokens
+                    # (B, L) -> (N_mask,)
+                    mask_indices = torch.nonzero(is_mask, as_tuple=True)
+                    
+                    # Select logits for masked positions: (N_mask, V)
+                    masked_logits = last_logits[mask_indices]
+                    
+                    # Compute expected embeddings only for masked positions
+                    probs = F.softmax(masked_logits.to(torch.float32), dim=-1).to(inputs_embeds.dtype)
+                    vocab_embeds = model.get_input_embeddings().weight
+                    expected_embeds = torch.matmul(probs, vocab_embeds)
+                    
+                    mask_embed = vocab_embeds[mask_id]
+                    new_mask_embeds = expected_embeds * weight + mask_embed * (1 - weight)
+                    
+                    # Update input embeddings
+                    inputs_embeds[mask_indices] = new_mask_embeds
+            
+            out = model(inputs_embeds=inputs_embeds, use_cache=True)
+            last_logits = out.logits.clone()
+            
             pkv = out.past_key_values
             # chop prefix out of past_kv to keep cache small
             new_pkv = tuple(
@@ -94,7 +122,24 @@ def generate_with_prefix_cache(
             )
             pkv = new_pkv
         else:
-            out = model(x, use_cache=False)
+            inputs_embeds = model.get_input_embeddings()(x)
+            if last_logits is not None:
+                is_mask = (x == mask_id)
+                if is_mask.any():
+                     # Optimize: Only compute softmax and matmul for masked tokens
+                    mask_indices = torch.nonzero(is_mask, as_tuple=True)
+                    masked_logits = last_logits[mask_indices]
+                    
+                    probs = F.softmax(masked_logits.to(torch.float32), dim=-1).to(inputs_embeds.dtype)
+                    vocab_embeds = model.get_input_embeddings().weight
+                    expected_embeds = torch.matmul(probs, vocab_embeds)
+                    
+                    mask_embed = vocab_embeds[mask_id]
+                    new_mask_embeds = expected_embeds * weight + mask_embed * (1 - weight)
+                    inputs_embeds[mask_indices] = new_mask_embeds
+                
+            out = model(inputs_embeds=inputs_embeds, use_cache=False)
+            last_logits = out.logits.clone()
         
         mask_all = (x == mask_id)
         mask_all[:, e:] = 0
@@ -115,26 +160,87 @@ def generate_with_prefix_cache(
                 mask_blk = (x[:, s:] == mask_id)
             mask_blk[:, block_length:] = 0
 
+            current_transfer = num_transfer[:, i] if i < num_transfer.shape[1] else torch.ones_like(num_transfer[:, 0])
+
             if use_cache:
                 if cgws is not None:
-                    logits = model(x[:, window_slice], past_key_values=pkv, use_cache=True).logits
+                    slice_idx = window_slice
+                else:
+                    try:
+                        slice_idx = slice(s, None)
+                    except:
+                        slice_idx = np.s_[s:]
+                
+                # We need input embeddings for the slice
+                inputs_embeds = model.get_input_embeddings()(x[:, slice_idx])
+                if last_logits is not None:
+                    is_mask = (x[:, slice_idx] == mask_id)
+                    if is_mask.any():
+                        # Optimize: Only compute for masked tokens
+                        mask_indices = torch.nonzero(is_mask, as_tuple=True)
+                        
+                        # last_logits is full length, so we first slice it then select mask indices
+                        # Note: inputs_embeds is already sliced, so mask_indices are relative to the slice
+                        current_last_logits_slice = last_logits[:, slice_idx]
+                        masked_logits = current_last_logits_slice[mask_indices]
+
+                        probs = F.softmax(masked_logits.to(torch.float32), dim=-1).to(inputs_embeds.dtype)
+                        vocab_embeds = model.get_input_embeddings().weight
+                        expected_embeds = torch.matmul(probs, vocab_embeds)
+                        
+                        mask_embed = vocab_embeds[mask_id]
+                        new_mask_embeds = expected_embeds * weight + mask_embed * (1 - weight)
+                        inputs_embeds[mask_indices] = new_mask_embeds
+                
+                out = model(inputs_embeds=inputs_embeds, past_key_values=pkv, use_cache=True)
+                logits = out.logits
+                
+                last_logits[:, slice_idx] = logits.clone()
+
+                if cgws is not None:
                     x0, tr_idx = get_transfer_index(
                         logits, temperature, target,
-                        mask_blk, x[:, window_slice], num_transfer[:, i], unmask_threshold)
+                        mask_blk, x[:, window_slice], current_transfer, unmask_threshold)
                     x[:, window_slice][tr_idx] = x0[tr_idx]
                 else:
-                    logits = model(x[:, s:], past_key_values=pkv, use_cache=True).logits
                     x0, tr_idx = get_transfer_index(
                         logits, temperature, target,
-                        mask_blk, x[:, s:], num_transfer[:, i], unmask_threshold)
+                        mask_blk, x[:, s:], current_transfer, unmask_threshold)
                     x[:, s:][tr_idx] = x0[tr_idx]
             else:
-                logits = model(x, use_cache=False).logits
-                logits = logits[:, s:]
-                x0, tr_idx = get_transfer_index(
-                    logits, temperature, target,
-                    mask_blk, x[:, s:], num_transfer[:, i], unmask_threshold)
-                x[:, s:][tr_idx] = x0[tr_idx]
+                inputs_embeds = model.get_input_embeddings()(x)
+                if last_logits is not None:
+                    is_mask = (x == mask_id)
+                    if is_mask.any():
+                        # Optimize: Only compute for masked tokens
+                        mask_indices = torch.nonzero(is_mask, as_tuple=True)
+                        masked_logits = last_logits[mask_indices]
+                        
+                        probs = F.softmax(masked_logits.to(torch.float32), dim=-1).to(inputs_embeds.dtype)
+                        vocab_embeds = model.get_input_embeddings().weight
+                        expected_embeds = torch.matmul(probs, vocab_embeds)
+                        
+                        mask_embed = vocab_embeds[mask_id]
+                        new_mask_embeds = expected_embeds * weight + mask_embed * (1 - weight)
+                        inputs_embeds[mask_indices] = new_mask_embeds
+                
+                out = model(inputs_embeds=inputs_embeds, use_cache=False)
+                logits = out.logits
+
+                last_logits = logits.clone()
+
+                if cgws is not None:
+                    logits = logits[:, window_slice]
+                    x0, tr_idx = get_transfer_index(
+                        logits, temperature, target,
+                        mask_blk, x[:, window_slice], current_transfer, unmask_threshold)
+                    x[:, window_slice][tr_idx] = x0[tr_idx]
+                else:
+                    logits = logits[:, s:]
+                    x0, tr_idx = get_transfer_index(
+                        logits, temperature, target,
+                        mask_blk, x[:, s:], current_transfer, unmask_threshold)
+                    x[:, s:][tr_idx] = x0[tr_idx]
             
             hist.append(x.clone().cpu())
 
