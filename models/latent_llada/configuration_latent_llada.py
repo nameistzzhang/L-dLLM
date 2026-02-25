@@ -430,8 +430,8 @@ class ActivationCheckpointingStrategy(StrEnum):
     """
 
 
-class LLaDAConfig(PretrainedConfig):
-    model_type = "llada"
+class LatentLLaDAConfig(PretrainedConfig):
+    model_type = "latent_llada"
     keys_to_ignore_at_inference = ["past_key_values"]  # TODO: confirm
 
     def __init__(self, use_cache: bool = False, **kwargs):
@@ -460,4 +460,4 @@ class LLaDAConfig(PretrainedConfig):
 
 
 # Register the config class so that it is available for transformer pipelines, auto-loading etc.
-AutoConfig.register("llada", LLaDAConfig)
+AutoConfig.register("latent_llada", LatentLLaDAConfig)

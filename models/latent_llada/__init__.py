@@ -1,1 +1,1 @@
-from .modeling_latent_llada import LatentLLaDAModelLM, LLaDAConfig
+from .modeling_latent_llada import LatentLLaDAModelLM, LatentLLaDAConfig
