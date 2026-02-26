@@ -1,7 +1,8 @@
 import torch
 import os
 import sys
-from transformers import AutoModel, AutoConfig, PreTrainedModel, PretrainedConfig
+import shutil
+from transformers import AutoModel, AutoConfig, AutoTokenizer
 
 # Ensure the root directory is in sys.path so we can import models if running as script
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -21,12 +22,12 @@ def convert_llada_to_latent(model_id="/scratch/aszalay1/tianze/models/llada_8b_i
     """
     Converts a standard LLaDA model checkpoint to a Latent LLaDA model checkpoint.
     
-    This function:
+    This function:  
     1. Loads the original LLaDA model (backbone).
     2. Initializes a new Latent LLaDA model structure (including the new Gate).
     3. Copies the matching backbone weights from LLaDA to Latent LLaDA.
     4. Leaves the new 'Gate' parameters randomly initialized.
-    5. Saves the resulting model.
+    5. Saves the resulting model along with tokenizer and configuration files.
     """
     print(f"Loading Original LLaDA model from: {model_id} ...")
     
@@ -38,11 +39,12 @@ def convert_llada_to_latent(model_id="/scratch/aszalay1/tianze/models/llada_8b_i
             torch_dtype=torch.bfloat16,
             device_map="cpu" 
         )
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
     except Exception as e:
-        print(f"Error loading original model: {e}")
+        print(f"Error loading original model or tokenizer: {e}")
         return
 
-    print("Original model loaded successfully.")
+    print("Original model and tokenizer loaded successfully.")
     
     # Create Latent Config based on Original Config
     print("Creating Latent LLaDA configuration...")
@@ -110,7 +112,30 @@ def convert_llada_to_latent(model_id="/scratch/aszalay1/tianze/models/llada_8b_i
     if save_path:
         print(f"\nSaving converted Latent LLaDA model to: {save_path}")
         os.makedirs(save_path, exist_ok=True)
+        
+        # 1. Register auto class in config to ensure loading via AutoModel works with trust_remote_code=True
+        LatentLLaDAConfig.register_for_auto_class()
+        LatentLLaDAModelLM.register_for_auto_class("AutoModel")
+
+        # 2. Save model and tokenizer
         latent_model.save_pretrained(save_path)
+        tokenizer.save_pretrained(save_path)
+        
+        # 3. Copy python modeling files to destination for portability
+        # We need to copy `modeling_latent_llada.py` and `configuration_latent_llada.py`
+        try:
+            # Determine source paths based on imports
+            # Note: sys.modules may have different paths depending on how it was imported, 
+            # but usually __file__ on the module works
+            model_src = sys.modules[LatentLLaDAModelLM.__module__].__file__
+            config_src = sys.modules[LatentLLaDAConfig.__module__].__file__
+            
+            shutil.copy(model_src, os.path.join(save_path, os.path.basename(model_src)))
+            shutil.copy(config_src, os.path.join(save_path, os.path.basename(config_src)))
+            print(f"Copied modeling files to {save_path}")
+        except Exception as e:
+            print(f"Warning: Could not copy modeling files automatically: {e}")
+
         print("Model saved successfully.")
 
     return latent_model
