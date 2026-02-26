@@ -17,7 +17,7 @@ except ImportError:
     from .models.latent_llada.configuration_latent_llada import LatentLLaDAConfig
 
 
-def convert_llada_to_latent(model_id="GSAI-ML/LLaDA-8B-Base", save_path="models/converted_latent_llada"):
+def convert_llada_to_latent(model_id="/scratch/aszalay1/tianze/models/llada_8b_instruct", save_path="/scratch/aszalay1/tianze/models/latent_llada_8b"):
     """
     Converts a standard LLaDA model checkpoint to a Latent LLaDA model checkpoint.
     
