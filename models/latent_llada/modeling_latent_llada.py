@@ -1322,9 +1322,7 @@ class LatentLLaDAModel(nn.Module):
             if alpha_mask is not None:
                 alpha = alpha * alpha_mask.view(batch_size, seq_len, 1)
 
-            mask_id = torch.tensor([self.config.mask_token_id], device=x.device, dtype=torch.long)
-            mask_embed = self.transformer.wte(mask_id).view(1, 1, -1)
-            x = (1 - alpha) * mask_embed + alpha * x
+            x = (1 - alpha) * x + alpha * expected_embeds
 
         if self.config.input_emb_norm:
             x = x * (self.config.d_model**0.5)

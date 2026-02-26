@@ -21,7 +21,7 @@ from tqdm.auto import tqdm
 
 
 from train.utils import get_config, flatten_omega_conf, AverageMeter
-from models import LLaDAModelLM
+from models import LatentLLaDAModelLM
 from train.prompting_utils import UniversalPrompting
 from models.lr_schedulers import get_scheduler
 from models.logging import set_verbosity_info, set_verbosity_error
@@ -33,10 +33,11 @@ logger = get_logger(__name__, log_level="INFO")
 
 
 class TrainDataset(Dataset):
-    def __init__(self, inputs, labels, pmasks):
+    def __init__(self, inputs, labels, pmasks, t):
         self.inputs = inputs
         self.labels = labels
         self.pmasks = pmasks
+        self.t = t
 
     def __len__(self):
         return len(self.inputs)
@@ -45,7 +46,8 @@ class TrainDataset(Dataset):
         return (
             self.inputs[idx],
             self.labels[idx],
-            self.pmasks[idx]
+            self.pmasks[idx],
+            self.t[idx]
         )
 
 
@@ -138,7 +140,7 @@ def main():
                                        max_gen_length=config.training.max_gen_length,
                                        ignore_id=-100) # set up universal prompting for data processing
     
-    model = LLaDAModelLM.from_pretrained(pretrained_model, torch_dtype=torch.bfloat16)
+    model = LatentLLaDAModelLM.from_pretrained(pretrained_model, torch_dtype=torch.bfloat16)
     model = model.to(accelerator.device) # load model to accelerator device (GPU/TPU)
 
     mask_id = tokenizer.encode('<|mdm_mask|>')[0]
@@ -176,9 +178,28 @@ def main():
 
     # * ---- util function for data processing ----
     @torch.no_grad()
-    def prepare_inputs_and_labels_for_text(
+    def prepare_all_noisy_batch(
         prompt, response, step_map, eps=1e-3, mask_id=mask_id
     ):
+        """
+        Prepares a batch of noisy data where the entire response is masked.
+        
+        Args:
+            prompt (List[str]): List of prompt strings.
+            response (List[str]): List of response strings.
+            step_map (List[List[int]]): List of step maps (currently unused in body but required by signature).
+            eps (float, optional): Epsilon value. Defaults to 1e-3.
+            mask_id (int, optional): The token ID used for masking. Defaults to mask_id from outer scope.
+
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, int]: 
+                - noisy_batch: Input IDs with responses fully masked. Shape: (B*m, L)
+                - labels_lm: Original labels for loss calculation. Shape: (B*m, L)
+                - p_mask: Boolean mask indicating prediction positions (masked tokens). Shape: (B*m, L)
+                - start_pos: The starting position of the response.
+                - drop_num: Number of samples dropped during processing.
+        """
+
         input_ids_lm, labels_lm, start_pos, drop_num = uni_prompting((prompt, response))
         
         B, L = input_ids_lm.shape
@@ -193,7 +214,7 @@ def main():
         lower = config.training.lower_p
         upper = config.training.upper_p    
 
-        m = config.training.mask_times_per_sample
+        m = 1 # for each sample, only 1 fully masked version is created. 
         B, L = input_ids_lm.shape
         device = input_ids_lm.device
 
@@ -212,8 +233,7 @@ def main():
                 tail_pad_b       = torch.zeros(L, dtype=torch.bool, device=device)
 
             for _ in range(m):
-                t = (upper - lower) * torch.rand(1, device=device) + lower
-                rand_mask = torch.rand(L, device=device) < t
+                rand_mask = torch.ones(L, dtype=torch.bool, device=device) # * mask all response
                 rand_mask[:start_pos] = False
                 rand_mask = rand_mask & ~tail_pad_b
 
@@ -236,17 +256,21 @@ def main():
         noisy_batch = noisy_batch[valid_rows]
         labels_lm   = labels_lm[valid_rows]
         p_mask      = p_mask[valid_rows]
+
+        # Generate random t for each sample
+        t = (upper - lower) * torch.rand(noisy_batch.shape[0], device=device) + lower
         
-        return noisy_batch, labels_lm, p_mask, start_pos, drop_num
+        return noisy_batch, labels_lm, p_mask, start_pos, drop_num, t
     
 
     # * ---- util function for collating batches ----
     def simple_collate(batch):
-        inp, lbl, msk = zip(*batch)  
+        inp, lbl, msk, t = zip(*batch)  
         return {
             "input_ids":  torch.stack(inp),
             "labels":     torch.stack(lbl),
-            "p_mask_lm":  torch.stack(msk)
+            "p_mask_lm":  torch.stack(msk),
+            "t":          torch.stack(t)
         }
 
 
@@ -266,8 +290,8 @@ def main():
             step_map_list.append([j for j in range(config.training.max_gen_length)])
         else:
             step_map_list.append(x["step_map"])
-    input_ids, labels, p_mask_lm, start_pos, drop_num = prepare_inputs_and_labels_for_text(prompt_list, response_list, step_map_list)
-    dataset_lm = TrainDataset(input_ids, labels, p_mask_lm)
+    input_ids, labels, p_mask_lm, start_pos, drop_num, t = prepare_all_noisy_batch(prompt_list, response_list, step_map_list)
+    dataset_lm = TrainDataset(input_ids, labels, p_mask_lm, t)
 
     train_dataloader_lm = DataLoader(
         dataset_lm,
@@ -342,7 +366,7 @@ def main():
     logger.info(f"  Gradient Accumulation steps = {config.training.gradient_accumulation_steps}")
     
     
-    # * ---- training loss function ----
+    # * ---- training forward logit and loss function ----
     """
     Calculates the Masked Negative Log-Likelihood (NLL) Loss.
     1. Computes log-probabilities for the input tokens.
@@ -351,7 +375,7 @@ def main():
     4. Computes the average negative log-likelihood per valid token for each sequence.
     5. Returns the mean loss across the batch.
     """
-    def forward_process(input_ids, labels, p_mask_lm):
+    def unnmask_forward_process(input_ids, labels, p_mask_lm):
         logits = model(input_ids).logits
         B, T, V = logits.shape
 
@@ -371,7 +395,107 @@ def main():
         loss_lm = loss_lm / mask_num
     
         loss_lm = loss_lm.sum() / B
+        return loss_lm, accuracy, logits
+    
+    def flowmatch_forward_process(input_ids, probs, t, labels):
+        """
+        Computes the Flow Matching loss.
+
+        Args:
+            input_ids (torch.LongTensor): (Batch, Seq).
+            probability (torch.Tensor): (Batch, Seq, Vocab).
+            t (torch.Tensor): (Batch,).
+            labels (torch.LongTensor): (Batch, Seq). Indices set to -100 are ignored.
+        
+        Returns:
+            loss_lm (torch.Tensor): Scalar loss.
+            accuracy (float): Scalar accuracy.
+        """
+        # Construct alpha_mask: 0 for tokens where label is -100, 1 otherwise
+        alpha_mask = (labels != -100).float().unsqueeze(-1) # (Batch, Seq, 1)
+        logits = model(
+            input_ids=input_ids,
+            labels=labels,
+            probability=probs,
+            t=t,
+            alpha_mask=alpha_mask
+        ).logits
+        
+        # normal CE loss calculation
+        B, T, V = logits.shape
+
+        safe_labels = labels.clone()
+        safe_labels[labels == -100] = 0
+
+        # Calculate accuracy
+        preds = torch.argmax(logits, dim=-1) # (B, T)
+        correct_mask = (preds == safe_labels) & p_mask_lm
+        accuracy = correct_mask.sum().float() / p_mask_lm.sum().clamp(min=1).float()
+
+        log_probs = F.log_softmax(logits, dim=-1)   # (B, T, V)
+        logp_tok = log_probs.gather(dim=-1, index=safe_labels.unsqueeze(-1)).squeeze(-1)     # (B, T)
+        loss_lm = - (logp_tok * p_mask_lm).sum(dim=1) # (B)
+
+        mask_num = (p_mask_lm).sum(dim=1).clamp(min=1)
+        loss_lm = loss_lm / mask_num
+
+        # normalization on t
+        loss_lm = loss_lm / t
+    
+        loss_lm = loss_lm.sum() / B
         return loss_lm, accuracy
+
+
+    # * ---- flow-match sampling logic ----
+    def flowmatch_sampling(flow_start_probs, t, labels):
+
+        # flow start probs -> (Batch, Seq, Vocab)
+        # labels -> (Batch, Seq)
+        # t -> (Batch,)
+
+        # 1. Create one-hot target probabilities from labels
+        flow_target_probs = torch.zeros_like(flow_start_probs)
+        safe_labels = labels.clone()
+        safe_labels[labels == -100] = 0
+        flow_target_probs.scatter_(dim=-1, index=safe_labels.unsqueeze(-1), value=1.0)
+
+        # 2. Map to the hypersphere (Square root space)
+        # x0 is the start point, x1 is the target point
+        x0 = torch.sqrt(flow_start_probs + 1e-10) 
+        x1 = torch.sqrt(flow_target_probs + 1e-10)
+
+        # 3. Calculate the angle theta between x0 and x1
+        # Dot product along the vocab dimension
+        dot = torch.sum(x0 * x1, dim=-1, keepdim=True) # (Batch, Seq, 1)
+        dot = torch.clamp(dot, -1.0, 1.0)
+        theta = torch.acos(dot) # (Batch, Seq, 1)
+
+        # 4. Prepare t for broadcasting
+        # t shape: (Batch,) -> (Batch, 1, 1)
+        t_scaled = t.view(-1, 1, 1)
+
+        # 5. Spherical Linear Interpolation (Slerp)
+        # Handle the case where theta is very small to avoid division by zero
+        mask = (theta < 1e-4).float()
+        
+        # Standard Linear Interpolation for small angles
+        lerp_part = (1.0 - t_scaled) * x0 + t_scaled * x1
+        
+        # Slerp for normal cases
+        sin_theta = torch.sin(theta)
+        slerp_part = (torch.sin((1.0 - t_scaled) * theta) / (sin_theta + 1e-10)) * x0 + \
+                     (torch.sin(t_scaled * theta) / (sin_theta + 1e-10)) * x1
+        
+        xt = mask * lerp_part + (1.0 - mask) * slerp_part
+        
+        # 6. Map back to probability space
+        # Since xt is on the unit hypersphere, xt^2 sums to 1
+        flow_t_probs = torch.pow(xt, 2)
+        
+        # Ensure numerical stability (sometimes floating point errors can lead to slight sums > 1)
+        flow_t_probs = flow_t_probs / (flow_t_probs.sum(dim=-1, keepdim=True) + 1e-10)
+
+        return flow_t_probs
 
 
     # * ---- training loop ----
@@ -391,8 +515,10 @@ def main():
             leave=True          
         )
         
-        loss_meter = AverageMeter()
-        acc_meter = AverageMeter()
+        unmask_loss_meter = AverageMeter()
+        flowmatch_loss_meter = AverageMeter()   
+        unmask_acc_meter = AverageMeter()
+        flowmatch_acc_meter = AverageMeter()
 
         for step, batch in enumerate(progress_bar, start=1):
             # Count total micro-steps processed
@@ -401,17 +527,35 @@ def main():
             input_ids = batch["input_ids"].to(accelerator.device)
             labels    = batch["labels"].to(accelerator.device)
             p_mask_lm = batch["p_mask_lm"].to(accelerator.device)
+            t_batch   = batch["t"].to(accelerator.device)
 
             # Accumulate gradients manually
-            loss_lm, acc = forward_process(
+            unmask_loss_lm, unmask_acc, unmask_logits = unnmask_forward_process(
                 input_ids=input_ids,
                 labels=labels,
                 p_mask_lm=p_mask_lm
             )
+
+            # Calculate the probability after unmasking forward as starting point for flow matching forward
+            with torch.no_grad():
+                flow_start_probs = F.softmax(unmask_logits, dim=-1)
+                flow_t_probs = flowmatch_sampling(flow_start_probs, t_batch, labels)
             
-            # Record unscaled loss & accuracy for logging
-            loss_meter.update(loss_lm.item())
-            acc_meter.update(acc.item())
+            flowmatch_loss_lm, acc = flowmatch_forward_process(
+                input_ids=input_ids,
+                probs=flow_t_probs,
+                t=t_batch,
+                labels=labels
+            )
+
+            # Update meters
+            unmask_loss_meter.update(unmask_loss_lm.item())
+            flowmatch_loss_meter.update(flowmatch_loss_lm.item())
+            unmask_acc_meter.update(unmask_acc.item())
+            flowmatch_acc_meter.update(acc.item())
+
+            # combine losses
+            loss_lm = unmask_loss_lm + flowmatch_loss_lm
             
             loss_lm = loss_lm / accelerator.gradient_accumulation_steps
             accelerator.backward(loss_lm)
@@ -429,16 +573,21 @@ def main():
                 optimizer.zero_grad(set_to_none=True)
 
                 if accelerator.is_local_main_process:
-                   print(f"Global Step {global_update_step} | Loss: {loss_meter.avg:.4f} | Acc: {acc_meter.avg:.4f}")
+                   print(f"Global Step {global_update_step} | Unmask Loss: {unmask_loss_meter.avg:.4f} | Flowmatch Loss: {flowmatch_loss_meter.avg:.4f} | Unmask Acc: {unmask_acc_meter.avg:.4f} | Flowmatch Acc: {flowmatch_acc_meter.avg:.4f}")
 
                 accelerator.log({
-                    "loss": loss_meter.avg,
-                    "accuracy": acc_meter.avg,
+                    "loss": unmask_loss_meter.avg + flowmatch_loss_meter.avg,
+                    "unmask_loss": unmask_loss_meter.avg,
+                    "flowmatch_loss": flowmatch_loss_meter.avg,
+                    "unmask_accuracy": unmask_acc_meter.avg,
+                    "flowmatch_accuracy": flowmatch_acc_meter.avg,
                     "lr": lr_scheduler.get_last_lr()[0]
                 }, step=global_update_step)
                 
-                loss_meter.reset()
-                acc_meter.reset()
+                unmask_loss_meter.reset()
+                flowmatch_loss_meter.reset()
+                unmask_acc_meter.reset()
+                flowmatch_acc_meter.reset()
             
             del input_ids, labels, p_mask_lm, loss_lm, acc # release memory
             torch.cuda.empty_cache()
