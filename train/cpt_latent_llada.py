@@ -431,12 +431,19 @@ def main():
             logger.info(f"t shape: {t.shape}, min: {t.min().item()}, max: {t.max().item()}")
 
         # Construct alpha_mask: 0 for tokens where label is -100, 1 otherwise
-        alpha_mask = (labels != -100).float().unsqueeze(-1) # (Batch, Seq, 1)
+        target_dtype = next(model.parameters()).dtype
+        alpha_mask = (labels != -100).to(target_dtype).unsqueeze(-1) # (Batch, Seq, 1)
+        t_for_model = t.to(target_dtype)
+
+        if accelerator.is_local_main_process:
+            logger.info("--- [DEBUG] flowmatch_forward_dtype ---")
+            logger.info(f"t dtype: {t_for_model.dtype}, alpha_mask dtype: {alpha_mask.dtype}, target_dtype: {target_dtype}")
+
         logits = model(
             input_ids=input_ids,
             labels=labels,
             probability=probs,
-            t=t,
+            t=t_for_model,
             alpha_mask=alpha_mask
         ).logits
         

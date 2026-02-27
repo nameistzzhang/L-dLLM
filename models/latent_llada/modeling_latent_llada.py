@@ -91,7 +91,9 @@ class TimestepEmbedding(nn.Module):
         :param t: a 1-D Tensor of N indices, one per batch element. These may be fractional.
         :return: (Batch, Dim)
         """
+
         # (Batch, )
+        target_dtype = t.dtype
         t = t.view(-1) * 1000.0
         
         half = self.dim // 2
@@ -103,7 +105,7 @@ class TimestepEmbedding(nn.Module):
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if self.dim % 2:
             embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-        return embedding
+        return embedding.to(target_dtype)
 
 
 class LLaDAGate(nn.Module):
@@ -115,7 +117,7 @@ class LLaDAGate(nn.Module):
         self.time_embed = nn.Sequential(
              TimestepEmbedding(config.d_model),
              nn.Linear(config.d_model, config.d_model * 2 if config.activation_type == "swiglu" else config.d_model),
-             Activation(config),
+             Activation.build(config),
              nn.Linear(config.d_model, config.d_model)
         )
         
@@ -123,7 +125,7 @@ class LLaDAGate(nn.Module):
         # Takes [Expected_Embed (d_model), Time_Embed (d_model)] -> Alpha (1)
         self.gate_mlp = nn.Sequential(
             nn.Linear(config.d_model * 2, config.d_model * 2 if config.activation_type == "swiglu" else config.d_model),
-            Activation(config),
+            Activation.build(config),
             nn.Linear(config.d_model, 1),
             nn.Sigmoid() 
         )
