@@ -505,10 +505,6 @@ def main():
         # 5. Map back to probability space
         flow_t_probs = torch.pow(xt, 2)
         flow_t_probs = flow_t_probs / (flow_t_probs.sum(dim=-1, keepdim=True) + 1e-10)
-        
-        if accelerator.is_local_main_process:
-            logger.info(f"flow_t_probs min/max: {flow_t_probs.min().item()}/{flow_t_probs.max().item()}")
-            logger.info(f"theta min/max: {theta.min().item()}/{theta.max().item()}")
 
         return flow_t_probs.to(dtype=model.dtype)
 
