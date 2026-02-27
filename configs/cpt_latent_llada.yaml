@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: 'auto'
-  run_name: "debug_26-02-15" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_debug_26-02-27_1330" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -33,6 +33,7 @@ training:
     post_num: 0 # number of pad token need to be trained for each data point
     max_gen_length: 4096
     max_prompt_len: 2048
+    warmup: True # whether in the warmup training phase of the latent gate
 
 
 

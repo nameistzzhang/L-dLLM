@@ -150,6 +150,14 @@ def main():
     # * ---- set up optimizer ----
     optimizer_config = config.optimizer.params
 
+    if config.training.get("warmup", False):
+        logger.info("Warmup mode enabled: only training the latent gate parameters.")
+        for name, param in model.named_parameters():
+            if "gate" in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False # during warmup phase, only update parameters related to the latent gate.
+
     no_decay = ["bias", "layer_norm.weight", "mlm_ln.weight", "embeddings.weight"]
     optimizer_grouped_parameters = [
         {
@@ -161,6 +169,7 @@ def main():
             "weight_decay": 0.0,
         },
     ] # set up parameter groups for optimizer with weight decay applied to all parameters except those in no_decay list
+
 
     optimizer_type = config.optimizer.name
 
@@ -376,6 +385,11 @@ def main():
     5. Returns the mean loss across the batch.
     """
     def unnmask_forward_process(input_ids, labels, p_mask_lm):
+        if accelerator.is_local_main_process:
+            logger.info("--- [DEBUG] unnmask_forward_process ---")
+            logger.info(f"input_ids shape: {input_ids.shape}")
+            logger.info(f"labels shape: {labels.shape}")
+        
         logits = model(input_ids).logits
         B, T, V = logits.shape
 
@@ -395,6 +409,11 @@ def main():
         loss_lm = loss_lm / mask_num
     
         loss_lm = loss_lm.sum() / B
+        
+        if accelerator.is_local_main_process:
+            logger.info(f"unnmask loss: {loss_lm.item()}")
+            logger.info(f"unnmask accuracy: {accuracy.item()}")
+            
         return loss_lm, accuracy, logits
     
     def flowmatch_forward_process(input_ids, probs, t, labels):
@@ -411,6 +430,11 @@ def main():
             loss_lm (torch.Tensor): Scalar loss.
             accuracy (float): Scalar accuracy.
         """
+        if accelerator.is_local_main_process:
+            logger.info("--- [DEBUG] flowmatch_forward_process ---")
+            logger.info(f"probs shape: {probs.shape}, min: {probs.min().item()}, max: {probs.max().item()}")
+            logger.info(f"t shape: {t.shape}, min: {t.min().item()}, max: {t.max().item()}")
+
         # Construct alpha_mask: 0 for tokens where label is -100, 1 otherwise
         alpha_mask = (labels != -100).float().unsqueeze(-1) # (Batch, Seq, 1)
         logits = model(
@@ -443,57 +467,60 @@ def main():
         loss_lm = loss_lm / t
     
         loss_lm = loss_lm.sum() / B
+        
+        if accelerator.is_local_main_process:
+            logger.info(f"flowmatch loss: {loss_lm.item()}")
+            logger.info(f"flowmatch accuracy: {accuracy.item()}")
+            
         return loss_lm, accuracy
 
 
     # * ---- flow-match sampling logic ----
     def flowmatch_sampling(flow_start_probs, t, labels):
+        if accelerator.is_local_main_process:
+            logger.info("--- [DEBUG] flowmatch_sampling ---")
+            logger.info(f"flow_start_probs min/max: {flow_start_probs.min().item()}/{flow_start_probs.max().item()}")
 
-        # flow start probs -> (Batch, Seq, Vocab)
-        # labels -> (Batch, Seq)
-        # t -> (Batch,)
-
-        # 1. Create one-hot target probabilities from labels
-        flow_target_probs = torch.zeros_like(flow_start_probs)
+        # 0. Preparation: handle ignore_index (-100)
         safe_labels = labels.clone()
-        safe_labels[labels == -100] = 0
-        flow_target_probs.scatter_(dim=-1, index=safe_labels.unsqueeze(-1), value=1.0)
+        mask_ignore = (labels == -100)
+        safe_labels[mask_ignore] = 0
+        
+        # 1. Map to hypersphere
+        x0 = torch.sqrt(flow_start_probs + 1e-10)
+        
+        # 2. Optimized dot product
+        x0_target = x0.gather(dim=-1, index=safe_labels.unsqueeze(-1))
+        # Prevent exact 1.0 to avoid acos gradient explosion
+        dot = torch.clamp(x0_target, -1.0, 1.0 - 1e-6) 
+        theta = torch.acos(dot)
 
-        # 2. Map to the hypersphere (Square root space)
-        # x0 is the start point, x1 is the target point
-        x0 = torch.sqrt(flow_start_probs + 1e-10) 
-        x1 = torch.sqrt(flow_target_probs + 1e-10)
-
-        # 3. Calculate the angle theta between x0 and x1
-        # Dot product along the vocab dimension
-        dot = torch.sum(x0 * x1, dim=-1, keepdim=True) # (Batch, Seq, 1)
-        dot = torch.clamp(dot, -1.0, 1.0)
-        theta = torch.acos(dot) # (Batch, Seq, 1)
-
-        # 4. Prepare t for broadcasting
-        # t shape: (Batch,) -> (Batch, 1, 1)
+        # 3. Calculate interpolation coefficients
         t_scaled = t.view(-1, 1, 1)
-
-        # 5. Spherical Linear Interpolation (Slerp)
-        # Handle the case where theta is very small to avoid division by zero
-        mask = (theta < 1e-4).float()
-        
-        # Standard Linear Interpolation for small angles
-        lerp_part = (1.0 - t_scaled) * x0 + t_scaled * x1
-        
-        # Slerp for normal cases
         sin_theta = torch.sin(theta)
-        slerp_part = (torch.sin((1.0 - t_scaled) * theta) / (sin_theta + 1e-10)) * x0 + \
-                     (torch.sin(t_scaled * theta) / (sin_theta + 1e-10)) * x1
+        denom = sin_theta + 1e-10
         
-        xt = mask * lerp_part + (1.0 - mask) * slerp_part
+        coeff_x1_slerp = torch.sin((1.0 - t_scaled) * theta) / denom
+        coeff_x0_slerp = torch.sin(t_scaled * theta) / denom
         
-        # 6. Map back to probability space
-        # Since xt is on the unit hypersphere, xt^2 sums to 1
+        # Handle small angles (Lerp fallback)
+        small_angle_mask = (theta < 1e-4)
+        
+        # Use torch.where to avoid NaN propagation in gradients
+        coeff_x1 = torch.where(small_angle_mask, 1.0 - t_scaled, coeff_x1_slerp)
+        coeff_x0 = torch.where(small_angle_mask, t_scaled, coeff_x0_slerp)
+        
+        # 4. Calculate xt
+        xt = x0 * coeff_x0
+        xt.scatter_add_(dim=-1, index=safe_labels.unsqueeze(-1), src=coeff_x1)
+        
+        # 5. Map back to probability space
         flow_t_probs = torch.pow(xt, 2)
-        
-        # Ensure numerical stability (sometimes floating point errors can lead to slight sums > 1)
         flow_t_probs = flow_t_probs / (flow_t_probs.sum(dim=-1, keepdim=True) + 1e-10)
+        
+        if accelerator.is_local_main_process:
+            logger.info(f"flow_t_probs min/max: {flow_t_probs.min().item()}/{flow_t_probs.max().item()}")
+            logger.info(f"theta min/max: {theta.min().item()}/{theta.max().item()}")
 
         return flow_t_probs
 
@@ -537,9 +564,8 @@ def main():
             )
 
             # Calculate the probability after unmasking forward as starting point for flow matching forward
-            with torch.no_grad():
-                flow_start_probs = F.softmax(unmask_logits, dim=-1)
-                flow_t_probs = flowmatch_sampling(flow_start_probs, t_batch, labels)
+            flow_start_probs = F.softmax(unmask_logits, dim=-1)
+            flow_t_probs = flowmatch_sampling(flow_start_probs, t_batch, labels)
             
             flowmatch_loss_lm, acc = flowmatch_forward_process(
                 input_ids=input_ids,
