@@ -33,21 +33,25 @@ logger = get_logger(__name__, log_level="INFO")
 
 
 class TrainDataset(Dataset):
-    def __init__(self, inputs, labels, pmasks, t):
+    def __init__(self, inputs, labels, pmasks, config):
         self.inputs = inputs
         self.labels = labels
         self.pmasks = pmasks
-        self.t = t
+        self.config = config
 
     def __len__(self):
         return len(self.inputs)
 
     def __getitem__(self, idx):
+        # get random t for flow matching sampling
+        lower = self.config.training.lower_p
+        upper = self.config.training.upper_p
+        t = torch.rand(1) * (upper - lower) + lower    
         return (
             self.inputs[idx],
             self.labels[idx],
             self.pmasks[idx],
-            self.t[idx]
+            t,
         )
 
 
@@ -220,9 +224,6 @@ def main():
         input_ids_lm = input_ids_lm[:, :L_after]
         labels_lm = labels_lm[:, :L_after]
 
-        lower = config.training.lower_p
-        upper = config.training.upper_p    
-
         m = 1 # for each sample, only 1 fully masked version is created. 
         B, L = input_ids_lm.shape
         device = input_ids_lm.device
@@ -265,11 +266,8 @@ def main():
         noisy_batch = noisy_batch[valid_rows]
         labels_lm   = labels_lm[valid_rows]
         p_mask      = p_mask[valid_rows]
-
-        # Generate random t for each sample
-        t = (upper - lower) * torch.rand(noisy_batch.shape[0], device=device) + lower
         
-        return noisy_batch, labels_lm, p_mask, start_pos, drop_num, t
+        return noisy_batch, labels_lm, p_mask, start_pos, drop_num
     
 
     # * ---- util function for collating batches ----
@@ -299,8 +297,8 @@ def main():
             step_map_list.append([j for j in range(config.training.max_gen_length)])
         else:
             step_map_list.append(x["step_map"])
-    input_ids, labels, p_mask_lm, start_pos, drop_num, t = prepare_all_noisy_batch(prompt_list, response_list, step_map_list)
-    dataset_lm = TrainDataset(input_ids, labels, p_mask_lm, t)
+    input_ids, labels, p_mask_lm, start_pos, drop_num= prepare_all_noisy_batch(prompt_list, response_list, step_map_list)
+    dataset_lm = TrainDataset(input_ids, labels, p_mask_lm, config) # create dataset for language modeling with noisy inputs and corresponding labels and masks
 
     train_dataloader_lm = DataLoader(
         dataset_lm,
@@ -401,14 +399,11 @@ def main():
         correct_mask = (preds == safe_labels) & p_mask_lm
         accuracy = correct_mask.sum().float() / p_mask_lm.sum().clamp(min=1).float()
 
-        log_probs = F.log_softmax(logits, dim=-1)   # (B, T, V)
-        logp_tok = log_probs.gather(dim=-1, index=safe_labels.unsqueeze(-1)).squeeze(-1)     # (B, T)
-        loss_lm = - (logp_tok * p_mask_lm).sum(dim=1)
+        raw_loss = F.cross_entropy(logits.transpose(1, 2), labels, ignore_index=-100, reduction='none')
+        loss_lm = (raw_loss * p_mask_lm).sum(dim=1)
 
-        mask_num = (p_mask_lm).sum(dim=1).clamp(min=1)
-        loss_lm = loss_lm / mask_num
-    
-        loss_lm = loss_lm.sum() / B
+        mask_num = p_mask_lm.sum(dim=1).clamp(min=1)
+        loss_lm = (loss_lm / mask_num).sum() / B
         
         if accelerator.is_local_main_process:
             logger.info(f"unnmask loss: {loss_lm.item()}")
@@ -423,7 +418,7 @@ def main():
         Args:
             input_ids (torch.LongTensor): (Batch, Seq).
             probability (torch.Tensor): (Batch, Seq, Vocab).
-            t (torch.Tensor): (Batch,).
+            t (torch.Tensor): (Batch, 1).
             labels (torch.LongTensor): (Batch, Seq). Indices set to -100 are ignored.
         
         Returns:
@@ -456,17 +451,16 @@ def main():
         correct_mask = (preds == safe_labels) & p_mask_lm
         accuracy = correct_mask.sum().float() / p_mask_lm.sum().clamp(min=1).float()
 
-        log_probs = F.log_softmax(logits, dim=-1)   # (B, T, V)
-        logp_tok = log_probs.gather(dim=-1, index=safe_labels.unsqueeze(-1)).squeeze(-1)     # (B, T)
-        loss_lm = - (logp_tok * p_mask_lm).sum(dim=1) # (B)
+        raw_loss = F.cross_entropy(logits.transpose(1, 2), labels, ignore_index=-100, reduction='none')
+        loss_lm = (raw_loss * p_mask_lm).sum(dim=1)
 
-        mask_num = (p_mask_lm).sum(dim=1).clamp(min=1)
-        loss_lm = loss_lm / mask_num
+        mask_num = p_mask_lm.sum(dim=1).clamp(min=1)
+        loss_lm = loss_lm / mask_num  # shape: (B,)
 
-        # normalization on t
-        loss_lm = loss_lm / t
+        safe_t = torch.clamp(t.squeeze(-1), min=1e-5)
+        # loss_lm = (loss_lm / safe_t).sum() / B
+        loss_lm = (loss_lm).sum() / B # TODO: whether using safe_t for scaling or not ? Ablation can be done in the future.
     
-        loss_lm = loss_lm.sum() / B
         
         if accelerator.is_local_main_process:
             logger.info(f"flowmatch loss: {loss_lm.item()}")
@@ -485,6 +479,8 @@ def main():
         safe_labels = labels.clone()
         mask_ignore = (labels == -100)
         safe_labels[mask_ignore] = 0
+        flow_start_probs = flow_start_probs.to(torch.float32)
+        t = t.to(torch.float32)
         
         # 1. Map to hypersphere
         x0 = torch.sqrt(flow_start_probs + 1e-10)
@@ -522,7 +518,7 @@ def main():
             logger.info(f"flow_t_probs min/max: {flow_t_probs.min().item()}/{flow_t_probs.max().item()}")
             logger.info(f"theta min/max: {theta.min().item()}/{theta.max().item()}")
 
-        return flow_t_probs
+        return flow_t_probs.to(dtype=model.dtype)
 
 
     # * ---- training loop ----
@@ -548,75 +544,78 @@ def main():
         flowmatch_acc_meter = AverageMeter()
 
         for step, batch in enumerate(progress_bar, start=1):
-            # Count total micro-steps processed
-            total_micro_step = epoch * len(train_dataloader_lm) + step
+            with accelerator.accumulate(model):
+                # Count total micro-steps processed
+                
+                input_ids = batch["input_ids"].to(accelerator.device)
+                labels    = batch["labels"].to(accelerator.device)
+                p_mask_lm = batch["p_mask_lm"].to(accelerator.device)
+                t_batch   = batch["t"].to(accelerator.device)
+
+                # Accumulate gradients manually
+                unmask_loss_lm, unmask_acc, unmask_logits = unnmask_forward_process(
+                    input_ids=input_ids,
+                    labels=labels,
+                    p_mask_lm=p_mask_lm
+                )
+
+                # Calculate the probability after unmasking forward as starting point for flow matching forward
+                flow_start_probs = F.softmax(unmask_logits.detach(), dim=-1) # TODO: Ablation: Prevent hyper-large computation graph or not ?
+                flow_t_probs = flowmatch_sampling(flow_start_probs, t_batch, labels)
+                
+                flowmatch_loss_lm, acc = flowmatch_forward_process(
+                    input_ids=input_ids,
+                    probs=flow_t_probs,
+                    t=t_batch,
+                    labels=labels
+                )
+
+                # Update meters
+                unmask_loss_gathered = accelerator.gather_for_metrics(unmask_loss_lm).mean()
+                flowmatch_loss_gathered = accelerator.gather_for_metrics(flowmatch_loss_lm).mean()
+                unmask_acc_gathered = accelerator.gather_for_metrics(unmask_acc).mean()
+                flowmatch_acc_gathered = accelerator.gather_for_metrics(acc).mean()
+                unmask_loss_meter.update(unmask_loss_gathered.item())
+                flowmatch_loss_meter.update(flowmatch_loss_gathered.item())
+                unmask_acc_meter.update(unmask_acc_gathered.item())
+                flowmatch_acc_meter.update(flowmatch_acc_gathered.item())
+
+                # combine losses
+                loss_lm = unmask_loss_lm + flowmatch_loss_lm
+                
+                accelerator.backward(loss_lm)
+
+                if accelerator.sync_gradients:
+                    # Increment global update step
+                    global_update_step += 1
+
+                    if config.training.max_grad_norm is not None:
+                        accelerator.clip_grad_norm_(model.parameters(),
+                                                    config.training.max_grad_norm)
+
+                    if accelerator.is_local_main_process:
+                        print(f"Global Step {global_update_step} | Unmask Loss: {unmask_loss_meter.avg:.4f} | Flowmatch Loss: {flowmatch_loss_meter.avg:.4f} | Unmask Acc: {unmask_acc_meter.avg:.4f} | Flowmatch Acc: {flowmatch_acc_meter.avg:.4f}")
+
+                    accelerator.log({
+                        "loss": unmask_loss_meter.avg + flowmatch_loss_meter.avg,
+                        "unmask_loss": unmask_loss_meter.avg,
+                        "flowmatch_loss": flowmatch_loss_meter.avg,
+                        "unmask_accuracy": unmask_acc_meter.avg,
+                        "flowmatch_accuracy": flowmatch_acc_meter.avg,
+                        "lr": lr_scheduler.get_last_lr()[0]
+                    }, step=global_update_step)
+                    
+                    unmask_loss_meter.reset()
+                    flowmatch_loss_meter.reset()
+                    unmask_acc_meter.reset()
+                    flowmatch_acc_meter.reset()
             
-            input_ids = batch["input_ids"].to(accelerator.device)
-            labels    = batch["labels"].to(accelerator.device)
-            p_mask_lm = batch["p_mask_lm"].to(accelerator.device)
-            t_batch   = batch["t"].to(accelerator.device)
-
-            # Accumulate gradients manually
-            unmask_loss_lm, unmask_acc, unmask_logits = unnmask_forward_process(
-                input_ids=input_ids,
-                labels=labels,
-                p_mask_lm=p_mask_lm
-            )
-
-            # Calculate the probability after unmasking forward as starting point for flow matching forward
-            flow_start_probs = F.softmax(unmask_logits, dim=-1)
-            flow_t_probs = flowmatch_sampling(flow_start_probs, t_batch, labels)
-            
-            flowmatch_loss_lm, acc = flowmatch_forward_process(
-                input_ids=input_ids,
-                probs=flow_t_probs,
-                t=t_batch,
-                labels=labels
-            )
-
-            # Update meters
-            unmask_loss_meter.update(unmask_loss_lm.item())
-            flowmatch_loss_meter.update(flowmatch_loss_lm.item())
-            unmask_acc_meter.update(unmask_acc.item())
-            flowmatch_acc_meter.update(acc.item())
-
-            # combine losses
-            loss_lm = unmask_loss_lm + flowmatch_loss_lm
-            
-            loss_lm = loss_lm / accelerator.gradient_accumulation_steps
-            accelerator.backward(loss_lm)
-
-            if total_micro_step % accelerator.gradient_accumulation_steps == 0: # update model parameters and log training info
-                # Increment global update step
-                global_update_step += 1
-
-                if config.training.max_grad_norm is not None:
-                    accelerator.clip_grad_norm_(model.parameters(),
-                                                config.training.max_grad_norm)
-
+                # Perform optimizer step and lr scheduler step [accelerator automatically handles gradient synchronization and accumulation based on the configuration]
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
-                if accelerator.is_local_main_process:
-                   print(f"Global Step {global_update_step} | Unmask Loss: {unmask_loss_meter.avg:.4f} | Flowmatch Loss: {flowmatch_loss_meter.avg:.4f} | Unmask Acc: {unmask_acc_meter.avg:.4f} | Flowmatch Acc: {flowmatch_acc_meter.avg:.4f}")
-
-                accelerator.log({
-                    "loss": unmask_loss_meter.avg + flowmatch_loss_meter.avg,
-                    "unmask_loss": unmask_loss_meter.avg,
-                    "flowmatch_loss": flowmatch_loss_meter.avg,
-                    "unmask_accuracy": unmask_acc_meter.avg,
-                    "flowmatch_accuracy": flowmatch_acc_meter.avg,
-                    "lr": lr_scheduler.get_last_lr()[0]
-                }, step=global_update_step)
-                
-                unmask_loss_meter.reset()
-                flowmatch_loss_meter.reset()
-                unmask_acc_meter.reset()
-                flowmatch_acc_meter.reset()
-            
             del input_ids, labels, p_mask_lm, loss_lm, acc # release memory
-            torch.cuda.empty_cache()
 
         # Save checkpoint at the end of each epoch
         output_dir = Path(config.experiment.output_dir) / f"checkpoint-epoch-{epoch+1}"

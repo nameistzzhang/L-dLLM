@@ -1320,7 +1320,8 @@ class LatentLLaDAModel(nn.Module):
             alpha = self.gate(expected_embeds, t)
             
             if alpha_mask is not None:
-                alpha = alpha * alpha_mask.view(batch_size, seq_len, 1)
+                alpha_mask = alpha_mask.to(dtype=alpha.dtype).view(batch_size, seq_len, 1)
+                alpha = alpha * alpha_mask
 
             x = (1 - alpha) * x + alpha * expected_embeds
 
