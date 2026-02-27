@@ -383,10 +383,6 @@ def main():
     5. Returns the mean loss across the batch.
     """
     def unnmask_forward_process(input_ids, labels, p_mask_lm):
-        if accelerator.is_local_main_process:
-            logger.info("--- [DEBUG] unnmask_forward_process ---")
-            logger.info(f"input_ids shape: {input_ids.shape}")
-            logger.info(f"labels shape: {labels.shape}")
         
         logits = model(input_ids).logits
         B, T, V = logits.shape
@@ -425,19 +421,11 @@ def main():
             loss_lm (torch.Tensor): Scalar loss.
             accuracy (float): Scalar accuracy.
         """
-        if accelerator.is_local_main_process:
-            logger.info("--- [DEBUG] flowmatch_forward_process ---")
-            logger.info(f"probs shape: {probs.shape}, min: {probs.min().item()}, max: {probs.max().item()}")
-            logger.info(f"t shape: {t.shape}, min: {t.min().item()}, max: {t.max().item()}")
 
         # Construct alpha_mask: 0 for tokens where label is -100, 1 otherwise
         target_dtype = next(model.parameters()).dtype
         alpha_mask = (labels != -100).to(target_dtype).unsqueeze(-1) # (Batch, Seq, 1)
         t_for_model = t.to(target_dtype)
-
-        if accelerator.is_local_main_process:
-            logger.info("--- [DEBUG] flowmatch_forward_dtype ---")
-            logger.info(f"t dtype: {t_for_model.dtype}, alpha_mask dtype: {alpha_mask.dtype}, target_dtype: {target_dtype}")
 
         logits = model(
             input_ids=input_ids,
@@ -478,9 +466,6 @@ def main():
 
     # * ---- flow-match sampling logic ----
     def flowmatch_sampling(flow_start_probs, t, labels):
-        if accelerator.is_local_main_process:
-            logger.info("--- [DEBUG] flowmatch_sampling ---")
-            logger.info(f"flow_start_probs min/max: {flow_start_probs.min().item()}/{flow_start_probs.max().item()}")
 
         # 0. Preparation: handle ignore_index (-100)
         safe_labels = labels.clone()

@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: 'auto'
-  run_name: "cpt_latent_llada_debug_26-02-27_1330" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_warmup_gate_26-02-27_1620" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -23,7 +23,7 @@ training:
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 32
-    num_train_epochs: 1
+    num_train_epochs: 3
     max_grad_norm: 1
     method: "random_masking" # "random_masking""semi-ar"
     lower_p: 0.1
@@ -40,7 +40,7 @@ training:
 optimizer:
     name: adamw
     params: # default adamw params
-        learning_rate: 1e-5
+        learning_rate: 1e-4
         scale_lr: False # scale learning rate by total batch size
         beta1: 0.9
         beta2: 0.999
@@ -51,7 +51,7 @@ lr_scheduler:
     scheduler: "cosine"
     params:
         learning_rate: ${optimizer.params.learning_rate}
-        warmup_steps: 0
-        min_lr_scale: 1.0
+        warmup_steps: 100
+        min_lr_scale: 0.1
 
 
