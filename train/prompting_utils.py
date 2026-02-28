@@ -12,7 +12,7 @@ class UniversalPrompting():
         self.text_tokenizer = text_tokenizer
         self.max_gen_length = max_gen_length
         self.max_prompt_len = max_prompt_len
-
+        self.ignore_id = ignore_id
 
     # language modeling
     def lm_prompt(self, text_ids_pairs):
@@ -36,13 +36,13 @@ class UniversalPrompting():
             # 拼接 prompt + response + EOS
             temp_ids = prompt_ids + resp_ids
             temp_masks = [1] * len(temp_ids)
-            temp_labels = temp_ids.copy()
+            temp_labels = [self.ignore_id] * len(prompt_ids) + resp_ids
 
             # padding 或截断到 max_seq_len
             if len(temp_ids) < max_seq_len:
                 pad_len = max_seq_len - len(temp_ids)
                 temp_ids.extend([pad_id] * pad_len)
-                temp_labels.extend([pad_id] * pad_len)
+                temp_labels.extend([self.ignore_id] * pad_len)
                 temp_masks.extend([0] * pad_len)
             else:
                 temp_ids = temp_ids[:max_seq_len]

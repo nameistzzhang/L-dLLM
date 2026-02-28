@@ -52,5 +52,5 @@ lr_scheduler:
     params:
         learning_rate: ${optimizer.params.learning_rate}
         warmup_steps: 500
-
+        min_lr_scale: 0.1
 
