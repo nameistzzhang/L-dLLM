@@ -416,7 +416,7 @@ def main():
             
         return loss_lm, accuracy, logits
     
-    def flowmatch_forward_process(input_ids, probs, t, labels):
+    def flowmatch_forward_process(input_ids, probs, t, labels, weighting_strategy="constant"):
         """
         Computes the Flow Matching loss.
 
@@ -461,10 +461,24 @@ def main():
         mask_num = p_mask_lm.sum(dim=1).clamp(min=1)
         loss_lm = loss_lm / mask_num  # shape: (B,)
 
-        safe_t = torch.clamp(t.squeeze(-1), min=1e-5)
-        # loss_lm = (loss_lm / safe_t).sum() / B
-        loss_lm = (loss_lm).sum() / B # TODO: whether using safe_t for scaling or not ? Ablation can be done in the future.
-    
+        safe_t = torch.clamp(t.squeeze(-1), min=1e-5, max=1.0 - 1e-5)
+        weight_shape = [-1] + [1] * (loss_lm.dim() - 1)
+        if weighting_strategy == "constant": # no weighting, treat all noise levels equally
+            loss_lm = (loss_lm).sum() / B          
+        elif weighting_strategy == "symmetric": # peak at middle noise level and downweight both very low and very high noise levels
+            weight = 4.0 * safe_t * (1.0 - safe_t)
+            weight = weight.view(*weight_shape)
+            loss_lm = (loss_lm * weight).sum() / B       
+        elif weighting_strategy == "noise_focused": # upweight higher noise levels and downweight lower noise levels
+            weight = safe_t
+            weight = weight.view(*weight_shape)
+            loss_lm = (loss_lm * weight).sum() / B
+        elif weighting_strategy == "clean_focused": # upweight lower noise levels and downweight higher noise levels
+            weight = 1.0 - safe_t
+            weight = weight.view(*weight_shape)
+            loss_lm = (loss_lm * weight).sum() / B
+        else:
+            raise ValueError(f"Unknown weighting_strategy: {weighting_strategy}")
         
         if accelerator.is_local_main_process:
             logger.info(f"flowmatch loss: {loss_lm.item()}")
@@ -564,7 +578,8 @@ def main():
                     input_ids=input_ids,
                     probs=flow_t_probs,
                     t=t_batch,
-                    labels=labels
+                    labels=labels,
+                    weighting_strategy=config.training.flowmatch_loss_weighting_strategy
                 )
 
                 # Update meters
