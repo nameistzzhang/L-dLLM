@@ -156,11 +156,20 @@ def main():
 
     if config.training.get("warmup", False):
         logger.info("Warmup mode enabled: only training the latent gate parameters.")
+        
+        trainable_param_names = []
         for name, param in model.named_parameters():
-            if "gate" in name:
+            if "model.gate." in name:
                 param.requires_grad = True
+                trainable_param_names.append(name)
             else:
-                param.requires_grad = False # during warmup phase, only update parameters related to the latent gate.
+                param.requires_grad = False
+                
+        if accelerator.is_local_main_process:
+            logger.info("=== Trainable parameters during warmup ===")
+            for p_name in trainable_param_names:
+                logger.info(f"  - {p_name}")
+            logger.info("==========================================")
 
     no_decay = ["bias", "layer_norm.weight", "mlm_ln.weight", "embeddings.weight"]
     optimizer_grouped_parameters = [
@@ -425,6 +434,11 @@ def main():
         # Construct alpha_mask: 0 for tokens where label is -100, 1 otherwise
         target_dtype = next(model.parameters()).dtype
         alpha_mask = (labels != -100).to(target_dtype).unsqueeze(-1) # (Batch, Seq, 1)
+        # ! Log alpha_mask, labels, and input_ids for debugging
+        if accelerator.is_local_main_process:
+            logger.info(f"[DEBUG] alpha_mask: {alpha_mask.detach().cpu().int().tolist()}")
+            logger.info(f"[DEBUG] labels: {labels.detach().cpu().tolist()}")
+            logger.info(f"[DEBUG] input_ids: {input_ids.detach().cpu().tolist()}")
         t_for_model = t.to(target_dtype)
 
         logits = model(
