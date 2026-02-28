@@ -5,7 +5,7 @@ logger = get_logger(__name__, log_level="INFO")
 import torch
 class UniversalPrompting():
     def __init__(self, text_tokenizer,
-                 max_prompt_len=8000, max_gen_length=377, ignore_id=-100):
+                 max_prompt_len=8000, max_gen_length=377, ignore_id=-100, post_num=32):
         """
         :param text_tokenizer: original text tokenizer
         """
@@ -13,56 +13,35 @@ class UniversalPrompting():
         self.max_gen_length = max_gen_length
         self.max_prompt_len = max_prompt_len
         self.ignore_id = ignore_id
+        self.post_num = post_num
 
     # language modeling
     def lm_prompt(self, text_ids_pairs):
-        prompts_list, responses_list = text_ids_pairs
+        prompts_tensor, responses_tensor = text_ids_pairs
         pad_id = self.text_tokenizer.pad_token_id
 
-        # 计算每条序列的总长度 = prompt + response + eos
-        if responses_list.shape[1] < self.max_gen_length:
-            max_seq_len = prompts_list.shape[1] + responses_list.shape[1]
+        input_ids = torch.cat([prompts_tensor, responses_tensor], dim=1)
+        prompt_len = prompts_tensor.shape[1]
+
+        max_seq_len = prompt_len + self.max_gen_length
+        if input_ids.shape[1] > max_seq_len:
+            input_ids = input_ids[:, :max_seq_len]
+
+        labels = input_ids.clone()
+        labels[:, :prompt_len] = self.ignore_id
+
+        resp_labels = labels[:, prompt_len:]
+        pad_mask = (resp_labels == pad_id)
+
+        if self.post_num > 0:
+            keep_pad_mask = pad_mask & (torch.cumsum(pad_mask.int(), dim=1) <= self.post_num)
+            drop_pad_mask = pad_mask & ~keep_pad_mask
         else:
-            max_seq_len = prompts_list.shape[1] + self.max_gen_length
-
-        sequence_ids = []
-        attention_masks = []
-        label_ids = []
-
-        for prompt_ids, resp_ids in zip(prompts_list, responses_list):
-            prompt_ids = prompt_ids.tolist()
-            resp_ids   = resp_ids.tolist()
-
-            # 拼接 prompt + response + EOS
-            temp_ids = prompt_ids + resp_ids
-            temp_masks = [1] * len(temp_ids)
-            temp_labels = [self.ignore_id] * len(prompt_ids) + resp_ids
-
-            # padding 或截断到 max_seq_len
-            if len(temp_ids) < max_seq_len:
-                pad_len = max_seq_len - len(temp_ids)
-                temp_ids.extend([pad_id] * pad_len)
-                temp_labels.extend([self.ignore_id] * pad_len)
-                temp_masks.extend([0] * pad_len)
-            else:
-                temp_ids = temp_ids[:max_seq_len]
-                temp_labels = temp_labels[:max_seq_len]
-                temp_masks = temp_masks[:max_seq_len]
-
-            # 转为张量并累积
-            sequence_ids.append(torch.tensor(temp_ids).unsqueeze(0))
-            attention_masks.append(torch.tensor(temp_masks).unsqueeze(0))
-            label_ids.append(torch.tensor(temp_labels).unsqueeze(0))
-
-        input_ids = torch.cat(sequence_ids, dim=0)
-        attention_masks = torch.cat(attention_masks, dim=0)
-        label_ids = torch.cat(label_ids, dim=0)
-        
-
-        return input_ids, label_ids, prompts_list.shape[1]
-
-        
+            drop_pad_mask = pad_mask
     
+        resp_labels[drop_pad_mask] = self.ignore_id
+
+        return input_ids, labels, prompt_len
 
     def mask_prompt(self):
         pass

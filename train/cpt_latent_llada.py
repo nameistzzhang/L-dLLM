@@ -142,7 +142,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model) # load tokenizer
     uni_prompting = UniversalPrompting(tokenizer, max_prompt_len=config.training.max_prompt_len,
                                        max_gen_length=config.training.max_gen_length,
-                                       ignore_id=-100) # set up universal prompting for data processing
+                                       ignore_id=-100, post_num=config.training.post_num) # set up universal prompting for data processing
     
     model = LatentLLaDAModelLM.from_pretrained(pretrained_model, torch_dtype=torch.bfloat16)
     model = model.to(accelerator.device) # load model to accelerator device (GPU/TPU)

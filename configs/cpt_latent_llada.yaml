@@ -30,7 +30,7 @@ training:
     upper_p: 0.9
     block_size: 16 # use for semi-ar
     mask_times_per_sample: 1 # for random_masking
-    post_num: 0 # number of pad token need to be trained for each data point
+    post_num: 32 # number of pad token need to be trained for each data point
     max_gen_length: 4096
     max_prompt_len: 2048
     warmup: True # whether in the warmup training phase of the latent gate
