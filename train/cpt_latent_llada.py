@@ -434,11 +434,6 @@ def main():
         # Construct alpha_mask: 0 for tokens where label is -100, 1 otherwise
         target_dtype = next(model.parameters()).dtype
         alpha_mask = (labels != -100).to(target_dtype).unsqueeze(-1) # (Batch, Seq, 1)
-        # ! Log alpha_mask, labels, and input_ids for debugging
-        if accelerator.is_local_main_process:
-            logger.info(f"[DEBUG] alpha_mask: {alpha_mask.detach().cpu().int().tolist()}")
-            logger.info(f"[DEBUG] labels: {labels.detach().cpu().tolist()}")
-            logger.info(f"[DEBUG] input_ids: {input_ids.detach().cpu().tolist()}")
         t_for_model = t.to(target_dtype)
 
         logits = model(
