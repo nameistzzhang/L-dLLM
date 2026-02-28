@@ -1,11 +1,11 @@
 wandb:
   entity: null
-  resume: 'auto'
-  run_name: "DEBUG_cpt_latent_llada_warmup_gate_26-02-28_1400" # the name of this run in wandb, can be different from experiment.project
+  resume: False
+  run_name: "cpt_latent_llada_warmup_gate_smaller_lr_smaller_seqlen_26-02-28_1630" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
-    project: "L-dLLM-training-logs" # need to be same of this file name
+    project: "continued_pretrain_latent_llada_warmup" # need to be same of this file name
     num_node: 1 # the number of machines you have
 
 model:
@@ -26,13 +26,13 @@ training:
     num_train_epochs: 3
     max_grad_norm: 1
     method: "random_masking" # "random_masking""semi-ar"
-    lower_p: 0.1
-    upper_p: 0.9
+    lower_p: 0.05
+    upper_p: 0.95
     block_size: 16 # use for semi-ar
     mask_times_per_sample: 1 # for random_masking
     post_num: 32 # number of pad token need to be trained for each data point
-    max_gen_length: 4096
-    max_prompt_len: 2048
+    max_gen_length: 2048
+    max_prompt_len: 1024
     warmup: True # whether in the warmup training phase of the latent gate
 
 
@@ -40,7 +40,7 @@ training:
 optimizer:
     name: adamw
     params: # default adamw params
-        learning_rate: 5e-5
+        learning_rate: 1e-5
         scale_lr: False # scale learning rate by total batch size
         beta1: 0.9
         beta2: 0.999
@@ -51,6 +51,6 @@ lr_scheduler:
     scheduler: "constant_with_warmup"
     params:
         learning_rate: ${optimizer.params.learning_rate}
-        warmup_steps: 500
+        warmup_steps: 100
         min_lr_scale: 0.1
 
