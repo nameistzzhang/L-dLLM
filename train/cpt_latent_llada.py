@@ -312,7 +312,7 @@ def main():
     train_dataloader_lm = DataLoader(
         dataset_lm,
         batch_size=config.training.batch_size_lm,
-        sampler=None,
+        shuffle=True,
         collate_fn=simple_collate,
         num_workers=0
     )
@@ -474,7 +474,7 @@ def main():
             weight = weight.view(*weight_shape)
             loss_lm = (loss_lm * weight).sum() / B
         elif weighting_strategy == "clean_focused": # upweight lower noise levels and downweight higher noise levels
-            weight = 1.0 - safe_t
+            weight = 1 / safe_t
             weight = weight.view(*weight_shape)
             loss_lm = (loss_lm * weight).sum() / B
         else:

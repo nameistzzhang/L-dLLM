@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: False
-  run_name: "cpt_latent_llada_warmup_gate_smaller_lr_smaller_seqlen_symmetric_weighting_26-02-28_1740" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_warmup_gate_large-global-bs_clean-focused_26-03-01_1225" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -18,7 +18,7 @@ dataset:
 
 training:
     gradient_checkpointing_enable: False # if the sequence is very large, set as True
-    gradient_accumulation_steps: 8
+    gradient_accumulation_steps: 32
     batch_size_lm: 1 # the total batch size is num_node * num_gpu_per_node * gradient_accumulation_steps * batch_size_lm
     mixed_precision: "bf16"
     enable_tf32: True
@@ -34,7 +34,7 @@ training:
     max_gen_length: 2048
     max_prompt_len: 1024
     warmup: True # whether in the warmup training phase of the latent gate
-    flowmatch_loss_weighting_strategy: "symmetric" # "constant", "symmetric", "noise_focused", "clean_focused"
+    flowmatch_loss_weighting_strategy: "clean_focused" # "constant", "symmetric", "noise_focused", "clean_focused"
 
 
 
