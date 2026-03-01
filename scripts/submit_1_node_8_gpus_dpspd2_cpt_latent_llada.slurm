@@ -5,6 +5,7 @@
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-task=24
 #SBATCH --time=24:00:00
+#SBATCH --exclude=c001
 
 # environment setup
 module purge
