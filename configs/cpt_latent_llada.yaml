@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: False
-  run_name: "cpt_latent_llada_warmup_gate_large-global-bs_clean-focused_26-03-01_1225" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_warmup_gate_polinomial-lr_large-global-bs_clean-focused_26-03-01_2230" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -49,9 +49,9 @@ optimizer:
         epsilon: 1e-8
 
 lr_scheduler:
-    scheduler: "constant_with_warmup"
+    scheduler: "polynomial"
     params:
         learning_rate: ${optimizer.params.learning_rate}
         warmup_steps: 100
         min_lr_scale: 0.1
-
+        power: 2.0

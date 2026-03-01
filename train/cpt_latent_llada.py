@@ -329,6 +329,7 @@ def main():
         optimizer=optimizer,
         num_training_steps=max_train_steps,
         num_warmup_steps=config.lr_scheduler.params.warmup_steps,
+        power=config.lr_scheduler.params.power,
         min_lr_scale=config.lr_scheduler.params.min_lr_scale
     )
 
