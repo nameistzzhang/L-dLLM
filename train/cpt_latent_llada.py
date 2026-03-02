@@ -623,10 +623,10 @@ def main():
                     unmask_acc_meter.reset()
                     flowmatch_acc_meter.reset()
             
-                # Perform optimizer step and lr scheduler step [accelerator automatically handles gradient synchronization and accumulation based on the configuration]
-                optimizer.step()
-                lr_scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
+                    # Perform optimizer step and lr scheduler step [accelerator automatically handles gradient synchronization and accumulation based on the configuration]
+                    optimizer.step()
+                    lr_scheduler.step()
+                    optimizer.zero_grad(set_to_none=True)
 
             del input_ids, labels, p_mask_lm, loss_lm, acc # release memory
 
