@@ -337,8 +337,8 @@ def main():
     # * ---- prepare model, optimizer, lr_scheduler and dataloader with accelerator ----
     logger.info("Preparing model, optimizer and dataloaders")
     #model, optimizer, lr_scheduler = accelerator.prepare(model, optimizer, lr_scheduler)
-    model, optimizer, lr_scheduler, train_dataloader_lm = accelerator.prepare(
-        model, optimizer, lr_scheduler, train_dataloader_lm
+    model, optimizer, train_dataloader_lm = accelerator.prepare(
+        model, optimizer, train_dataloader_lm
     )
     
     # * ---- Resume from checkpoint ----
@@ -598,8 +598,13 @@ def main():
                 
                 accelerator.backward(loss_lm)
 
+                # Perform optimizer step and lr scheduler step [accelerator automatically handles gradient synchronization and accumulation based on the configuration]
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+
                 if accelerator.sync_gradients:
-                    # Increment global update step
+                    # Increment global update step and lr scheduler
+                    lr_scheduler.step()
                     global_update_step += 1
 
                     if config.training.max_grad_norm is not None:
@@ -622,11 +627,6 @@ def main():
                     flowmatch_loss_meter.reset()
                     unmask_acc_meter.reset()
                     flowmatch_acc_meter.reset()
-            
-                    # Perform optimizer step and lr scheduler step [accelerator automatically handles gradient synchronization and accumulation based on the configuration]
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
 
             del input_ids, labels, p_mask_lm, loss_lm, acc # release memory
 

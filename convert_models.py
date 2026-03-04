@@ -2,6 +2,7 @@ import torch
 import os
 import sys
 import shutil
+import argparse
 from transformers import AutoModel, AutoConfig, AutoTokenizer
 
 # Ensure the root directory is in sys.path so we can import models if running as script
@@ -140,5 +141,108 @@ def convert_llada_to_latent(model_id="/scratch/aszalay1/tianze/models/llada_8b_i
 
     return latent_model
 
+def export_checkpoint_to_hf(checkpoint_dir, save_path):
+    """
+    Converts an accelerate training checkpoint into a clean Hugging Face model release.
+    
+    This function:
+    1. Loads the model weights and tokenizer from the training checkpoint.
+    2. Discards all accelerate/optimizer states (which take up massive disk space).
+    3. Registers the auto classes to ensure `trust_remote_code=True` works.
+    4. Saves the pure model, tokenizer, and copies the necessary Python modeling files.
+    """
+    print(f"Loading model and tokenizer from training checkpoint: {checkpoint_dir} ...")
+    
+    # 1. Load the model and tokenizer from the checkpoint
+    try:
+        # Load directly using your custom class to ensure correct architecture
+        model = LatentLLaDAModelLM.from_pretrained(
+            checkpoint_dir, 
+            torch_dtype=torch.bfloat16, 
+            device_map="cpu"
+        )
+        tokenizer = AutoTokenizer.from_pretrained(checkpoint_dir, trust_remote_code=True)
+    except Exception as e:
+        print(f"Error loading checkpoint: {e}")
+        return
+
+    print("Checkpoint loaded successfully. Preparing for clean HF export...")
+
+    # 2. Create the clean output directory
+    os.makedirs(save_path, exist_ok=True)
+    print(f"Saving pure HF model to: {save_path}")
+
+    # 3. Register auto classes so it can be loaded natively via AutoModel
+    LatentLLaDAConfig.register_for_auto_class()
+    LatentLLaDAModelLM.register_for_auto_class("AutoModel")
+
+    # 4. Save the model and tokenizer (This step drops all optimizer/accelerator states)
+    model.save_pretrained(save_path)
+    tokenizer.save_pretrained(save_path)
+
+    # 5. Copy the custom Python modeling files for portability
+    try:
+        model_src = sys.modules[LatentLLaDAModelLM.__module__].__file__
+        config_src = sys.modules[LatentLLaDAConfig.__module__].__file__
+        
+        shutil.copy(model_src, os.path.join(save_path, os.path.basename(model_src)))
+        shutil.copy(config_src, os.path.join(save_path, os.path.basename(config_src)))
+        print(f"Copied custom modeling files ({os.path.basename(model_src)}, {os.path.basename(config_src)}) to {save_path}")
+    except Exception as e:
+        print(f"Warning: Could not copy modeling files automatically: {e}")
+
+    print("\n[SUCCESS] Checkpoint successfully exported to a clean Hugging Face format!")
+    print(f"You can now load this model using:\n  AutoModel.from_pretrained('{save_path}', trust_remote_code=True)")
+
 if __name__ == "__main__":
-    convert_llada_to_latent()
+    parser = argparse.ArgumentParser(description="Latent LLaDA Model Conversion and Export Utility")
+    
+    # Create sub-parsers for different modes of operation
+    subparsers = parser.add_subparsers(dest="command", required=True, help="Choose the conversion mode")
+
+    # --- Mode 1: Initialize Latent LLaDA from original LLaDA ---
+    parser_init = subparsers.add_parser(
+        "init", 
+        help="Convert standard LLaDA model to Latent LLaDA structure (randomly initialized gate)"
+    )
+    parser_init.add_argument(
+        "--model_id", 
+        type=str, 
+        default="/scratch/aszalay1/tianze/models/llada_8b_instruct",
+        help="Path or HuggingFace ID of the original LLaDA model"
+    )
+    parser_init.add_argument(
+        "--save_path", 
+        type=str, 
+        default="/scratch/aszalay1/tianze/models/latent_llada_8b",
+        help="Directory to save the new Latent LLaDA model"
+    )
+
+    # --- Mode 2: Export trained Accelerate checkpoint to pure HF model ---
+    parser_export = subparsers.add_parser(
+        "export", 
+        help="Export an accelerate training checkpoint to a clean Hugging Face format"
+    )
+    parser_export.add_argument(
+        "--checkpoint_dir", 
+        type=str, 
+        required=True,
+        help="Path to the accelerate checkpoint directory (e.g., .../checkpoint-epoch-10)"
+    )
+    parser_export.add_argument(
+        "--save_path", 
+        type=str, 
+        required=True,
+        help="Directory to save the cleaned HF model release"
+    )
+
+    args = parser.parse_args()
+
+    # Execute the chosen command
+    if args.command == "init":
+        print(">>> Running Initialization Mode <<<")
+        convert_llada_to_latent(model_id=args.model_id, save_path=args.save_path)
+        
+    elif args.command == "export":
+        print(">>> Running Checkpoint Export Mode <<<")
+        export_checkpoint_to_hf(checkpoint_dir=args.checkpoint_dir, save_path=args.save_path)

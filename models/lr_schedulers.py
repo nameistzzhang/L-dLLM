@@ -18,8 +18,10 @@ import math
 from enum import Enum
 from typing import Optional, Union
 
+from accelerate import optimizer
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
+from transformers.convert_slow_tokenizers_checkpoints_to_fast import name
 
 from .logging import get_logger
 
@@ -288,6 +290,11 @@ def get_scheduler(
     # All other schedulers require `num_training_steps`
     if num_training_steps is None:
         raise ValueError(f"{name} requires `num_training_steps`, please provide that argument.")
+
+    if name == SchedulerType.COSINE:
+        return schedule_func(
+            optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps, min_lr_scale=min_lr_scale
+        )
 
     if name == SchedulerType.COSINE_WITH_RESTARTS:
         return schedule_func(
