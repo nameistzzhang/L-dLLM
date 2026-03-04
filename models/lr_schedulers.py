@@ -21,7 +21,6 @@ from typing import Optional, Union
 from accelerate import optimizer
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
-from transformers.convert_slow_tokenizers_checkpoints_to_fast import name
 
 from .logging import get_logger
 
