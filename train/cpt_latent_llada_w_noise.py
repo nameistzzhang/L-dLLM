@@ -31,6 +31,63 @@ from models.logging import set_verbosity_info, set_verbosity_error
 logger = get_logger(__name__, log_level="INFO")
 
 
+class AccuracyBucketMeter:
+    """Track accuracy distribution across t (noise level) buckets: [0.8-1.0], [0.6-0.8], [0.4-0.6], [0.2-0.4], [0.0-0.2]"""
+    def __init__(self):
+        self.buckets = {
+            "t_[0.8-1.0]": 0.0,
+            "t_[0.6-0.8]": 0.0,
+            "t_[0.4-0.6]": 0.0,
+            "t_[0.2-0.4]": 0.0,
+            "t_[0.0-0.2]": 0.0,
+        }
+        self.counts = {k: 0 for k in self.buckets}
+    
+    def update(self, accuracy_batch, t_batch):
+        """
+        accuracy_batch: torch.Tensor of shape (B,) 
+        t_batch: torch.Tensor of shape (B, 1) or (B,) with t values in [0, 1]
+        """
+        acc_values = accuracy_batch.flatten().cpu().numpy()
+        t_values = t_batch.flatten().cpu().numpy()
+        
+        for acc, t in zip(acc_values, t_values):
+            if t >= 0.8:
+                self.buckets["t_[0.8-1.0]"] += acc
+                self.counts["t_[0.8-1.0]"] += 1
+            elif t >= 0.6:
+                self.buckets["t_[0.6-0.8]"] += acc
+                self.counts["t_[0.6-0.8]"] += 1
+            elif t >= 0.4:
+                self.buckets["t_[0.4-0.6]"] += acc
+                self.counts["t_[0.4-0.6]"] += 1
+            elif t >= 0.2:
+                self.buckets["t_[0.2-0.4]"] += acc
+                self.counts["t_[0.2-0.4]"] += 1
+            else:
+                self.buckets["t_[0.0-0.2]"] += acc
+                self.counts["t_[0.0-0.2]"] += 1
+    
+    def get_avg_buckets(self):
+        avg_buckets = {}
+        for bucket_name in self.buckets:
+            if self.counts[bucket_name] > 0:
+                avg_buckets[bucket_name] = self.buckets[bucket_name] / self.counts[bucket_name]
+            else:
+                avg_buckets[bucket_name] = 0.0
+        return avg_buckets
+    
+    def get_overall_avg(self):
+        """Return the true weighted average across all buckets"""
+        total_sum = sum(self.buckets.values())
+        total_count = sum(self.counts.values())
+        return total_sum / total_count if total_count > 0 else 0.0
+    
+    def reset(self):
+        self.buckets = {k: 0.0 for k in self.buckets}
+        self.counts = {k: 0 for k in self.counts}
+
+
 
 class TrainDataset(Dataset):
     def __init__(self, inputs, labels, pmasks, config):
@@ -392,7 +449,7 @@ def main():
     4. Computes the average negative log-likelihood per valid token for each sequence.
     5. Returns the mean loss across the batch.
     """
-    def unnmask_forward_process(input_ids, labels, p_mask_lm):
+    def unnmask_forward_process(input_ids, labels, p_mask_lm, top_k=256):
         
         logits = model(input_ids).logits
         B, T, V = logits.shape
@@ -405,6 +462,13 @@ def main():
         correct_mask = (preds == safe_labels) & p_mask_lm
         accuracy = correct_mask.sum().float() / p_mask_lm.sum().clamp(min=1).float()
 
+        # Calculate topk accuracy (whether GT is in top-k predictions)
+        topk = top_k
+        _, topk_preds = torch.topk(logits, k=min(topk, V), dim=-1)  # (B, T, topk)
+        gt_in_topk = (topk_preds == safe_labels.unsqueeze(-1)).any(dim=-1)  # (B, T)
+        topk_acc_mask = gt_in_topk & p_mask_lm
+        topk_accuracy = topk_acc_mask.sum().float() / p_mask_lm.sum().clamp(min=1).float()
+
         raw_loss = F.cross_entropy(logits.transpose(1, 2), labels, ignore_index=-100, reduction='none')
         loss_lm = (raw_loss * p_mask_lm).sum(dim=1)
 
@@ -414,8 +478,9 @@ def main():
         if accelerator.is_local_main_process:
             logger.info(f"unnmask loss: {loss_lm.item()}")
             logger.info(f"unnmask accuracy: {accuracy.item()}")
+            logger.info(f"unnmask topk@{topk} accuracy: {topk_accuracy.item()}")
             
-        return loss_lm, accuracy, logits
+        return loss_lm, accuracy, topk_accuracy, logits
     
     def flowmatch_forward_process(input_ids, probs, t, labels, weighting_strategy="constant"):
         """
@@ -429,7 +494,7 @@ def main():
         
         Returns:
             loss_lm (torch.Tensor): Scalar loss.
-            accuracy (float): Scalar accuracy.
+            accuracy_per_seq (torch.Tensor): Per-sequence accuracy for bucketing.
         """
 
         # Construct alpha_mask: 0 for tokens where label is -100, 1 otherwise
@@ -451,10 +516,13 @@ def main():
         safe_labels = labels.clone()
         safe_labels[labels == -100] = 0
 
-        # Calculate accuracy
+        # Calculate accuracy per sequence for bucketing
         preds = torch.argmax(logits, dim=-1) # (B, T)
         correct_mask = (preds == safe_labels) & p_mask_lm
-        accuracy = correct_mask.sum().float() / p_mask_lm.sum().clamp(min=1).float()
+        # Sum correct predictions per sequence, then divide by number of valid positions per sequence
+        correct_per_seq = correct_mask.sum(dim=1)  # (B,)
+        valid_per_seq = p_mask_lm.sum(dim=1).clamp(min=1)  # (B,)
+        accuracy_per_seq = correct_per_seq.float() / valid_per_seq.float()  # (B,)
 
         raw_loss = F.cross_entropy(logits.transpose(1, 2), labels, ignore_index=-100, reduction='none')
         loss_lm = (raw_loss * p_mask_lm).sum(dim=1)
@@ -483,9 +551,9 @@ def main():
         
         if accelerator.is_local_main_process:
             logger.info(f"flowmatch loss: {loss_lm.item()}")
-            logger.info(f"flowmatch accuracy: {accuracy.item()}")
+            logger.info(f"flowmatch mean accuracy: {accuracy_per_seq.mean().item()}")
             
-        return loss_lm, accuracy
+        return loss_lm, accuracy_per_seq
 
 
     # * ---- flow-match sampling logic ----
@@ -590,7 +658,8 @@ def main():
         unmask_loss_meter = AverageMeter()
         flowmatch_loss_meter = AverageMeter()   
         unmask_acc_meter = AverageMeter()
-        flowmatch_acc_meter = AverageMeter()
+        unmask_topk_acc_meter = AverageMeter()
+        flowmatch_acc_bucket_meter = AccuracyBucketMeter()
 
         for step, batch in enumerate(progress_bar, start=1):
             with accelerator.accumulate(model):
@@ -602,16 +671,17 @@ def main():
                 t_batch   = batch["t"].to(accelerator.device)
 
                 # Accumulate gradients manually
-                unmask_loss_lm, unmask_acc, unmask_logits = unnmask_forward_process(
+                unmask_loss_lm, unmask_acc, unmask_topk_acc, unmask_logits = unnmask_forward_process(
                     input_ids=input_ids,
                     labels=labels,
-                    p_mask_lm=p_mask_lm
+                    p_mask_lm=p_mask_lm,
+                    top_k=config.training.top_k
                 )
 
                 # Calculate the probability after unmasking forward as starting point for flow matching forward
                 flow_t_probs = flowmatch_sampling(unmask_logits.detach(), t_batch, labels, sigma_max=config.training.sigma_max, top_k=config.training.top_k)
                 
-                flowmatch_loss_lm, acc = flowmatch_forward_process(
+                flowmatch_loss_lm, flowmatch_acc_per_seq = flowmatch_forward_process(
                     input_ids=input_ids,
                     probs=flow_t_probs,
                     t=t_batch,
@@ -623,11 +693,15 @@ def main():
                 unmask_loss_gathered = accelerator.gather_for_metrics(unmask_loss_lm).mean()
                 flowmatch_loss_gathered = accelerator.gather_for_metrics(flowmatch_loss_lm).mean()
                 unmask_acc_gathered = accelerator.gather_for_metrics(unmask_acc).mean()
-                flowmatch_acc_gathered = accelerator.gather_for_metrics(acc).mean()
+                unmask_topk_acc_gathered = accelerator.gather_for_metrics(unmask_topk_acc).mean()
+                flowmatch_acc_per_seq_gathered = accelerator.gather_for_metrics(flowmatch_acc_per_seq)
+                t_batch_gathered = accelerator.gather_for_metrics(t_batch)
+                
                 unmask_loss_meter.update(unmask_loss_gathered.item())
                 flowmatch_loss_meter.update(flowmatch_loss_gathered.item())
                 unmask_acc_meter.update(unmask_acc_gathered.item())
-                flowmatch_acc_meter.update(flowmatch_acc_gathered.item())
+                unmask_topk_acc_meter.update(unmask_topk_acc_gathered.item())
+                flowmatch_acc_bucket_meter.update(flowmatch_acc_per_seq_gathered, t_batch_gathered)
 
                 # combine losses
                 loss_lm = unmask_loss_lm + flowmatch_loss_lm
@@ -648,23 +722,33 @@ def main():
                                                     config.training.max_grad_norm)
 
                     if accelerator.is_local_main_process:
-                        print(f"Global Step {global_update_step} | Unmask Loss: {unmask_loss_meter.avg:.4f} | Flowmatch Loss: {flowmatch_loss_meter.avg:.4f} | Unmask Acc: {unmask_acc_meter.avg:.4f} | Flowmatch Acc: {flowmatch_acc_meter.avg:.4f}")
+                        print(f"Global Step {global_update_step} | Unmask Loss: {unmask_loss_meter.avg:.4f} | Flowmatch Loss: {flowmatch_loss_meter.avg:.4f} | Unmask Acc: {unmask_acc_meter.avg:.4f} | Unmask Top-k Acc: {unmask_topk_acc_meter.avg:.4f}")
 
-                    accelerator.log({
+                    flowmatch_bucket_avgs = flowmatch_acc_bucket_meter.get_avg_buckets()
+                    
+                    log_dict = {
                         "loss": unmask_loss_meter.avg + flowmatch_loss_meter.avg,
                         "unmask_loss": unmask_loss_meter.avg,
                         "flowmatch_loss": flowmatch_loss_meter.avg,
                         "unmask_accuracy": unmask_acc_meter.avg,
-                        "flowmatch_accuracy": flowmatch_acc_meter.avg,
+                        "unmask_topk_accuracy": unmask_topk_acc_meter.avg,
+                        "flowmatch_mean_accuracy": flowmatch_acc_bucket_meter.get_overall_avg(),
                         "lr": lr_scheduler.get_last_lr()[0]
-                    }, step=global_update_step)
+                    }
+                    
+                    # Add bucketed accuracy metrics
+                    for bucket_name, avg_acc in flowmatch_bucket_avgs.items():
+                        log_dict[f"flowmatch_acc_{bucket_name}"] = avg_acc
+                    
+                    accelerator.log(log_dict, step=global_update_step)
                     
                     unmask_loss_meter.reset()
                     flowmatch_loss_meter.reset()
                     unmask_acc_meter.reset()
-                    flowmatch_acc_meter.reset()
+                    unmask_topk_acc_meter.reset()
+                    flowmatch_acc_bucket_meter.reset()
 
-            del input_ids, labels, p_mask_lm, loss_lm, acc # release memory
+            del input_ids, labels, p_mask_lm, loss_lm # release memory
 
         # Save checkpoint at the end of each epoch
         output_dir = Path(config.experiment.output_dir) / f"checkpoint-epoch-{epoch+1}"
