@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: False
-  run_name: "cpt_latent_llada_w_noise_0-1_top-k-256_core_symmetric_26-03-05_2248" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_w_noise_0-1_top-k-8_core_symmetric_26-03-06_1317" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -36,7 +36,7 @@ training:
     warmup: False # whether in the warmup training phase of the latent gate
     flowmatch_loss_weighting_strategy: "symmetric" # "constant", "symmetric", "noise_focused", "clean_focused"
     sigma_max: 0.1
-    top_k: 256
+    top_k: 8
 
 
 
