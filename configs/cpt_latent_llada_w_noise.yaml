@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: False
-  run_name: "cpt_latent_llada_w_noise_core_symmetric_26-03-05_2235" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_w_noise_0-1_core_symmetric_26-03-05_2248" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -9,7 +9,7 @@ experiment:
     num_node: 1 # the number of machines you have
 
 model:
-    pretrained_model: "/scratch/aszalay1/tianze/models/latent_llada_8b" # absolute path of your model
+    pretrained_model: "/scratch/aszalay1/tianze/release_checkpoints/llada_warmup_coreset" # absolute path of your model
     optimized_name: "llada_8b_instruct_latent_sft_openthoughts" # the output name for your optimized model, will be saved under sft_llada/ckpt
 
 # sft dataset
@@ -31,18 +31,18 @@ training:
     block_size: 16 # use for semi-ar
     mask_times_per_sample: 1 # for random_masking
     post_num: 32 # number of pad token need to be trained for each data point
-    max_gen_length: 4096
+    max_gen_length: 2048
     max_prompt_len: 1024
-    warmup: True # whether in the warmup training phase of the latent gate
-    flowmatch_loss_weighting_strategy: "clean_focused" # "constant", "symmetric", "noise_focused", "clean_focused"
-    sigma_max: 0.2
+    warmup: False # whether in the warmup training phase of the latent gate
+    flowmatch_loss_weighting_strategy: "symmetric" # "constant", "symmetric", "noise_focused", "clean_focused"
+    sigma_max: 0.1
 
 
 
 optimizer:
     name: adamw
     params: # default adamw params
-        learning_rate: 1e-5
+        learning_rate: 5e-6
         scale_lr: False # scale learning rate by total batch size
         beta1: 0.9
         beta2: 0.999
@@ -50,7 +50,7 @@ optimizer:
         epsilon: 1e-8
 
 lr_scheduler:
-    scheduler: "polynomial"
+    scheduler: "cosine"
     params:
         learning_rate: ${optimizer.params.learning_rate}
         warmup_steps: 100
