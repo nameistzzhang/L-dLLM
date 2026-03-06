@@ -489,25 +489,42 @@ def main():
 
 
     # * ---- flow-match sampling logic ----
-    def flowmatch_sampling(flow_start_probs, t, labels, sigma_max=0.1):
+    def flowmatch_sampling(unmask_logits, t, labels, sigma_max=0.1, top_k=256):
 
-        # 0. Preparation: handle ignore_index (-100)
+        # 0. Preparation
         safe_labels = labels.clone()
         mask_ignore = (labels == -100)
         safe_labels[mask_ignore] = 0
-        flow_start_probs = flow_start_probs.to(torch.float32)
         t = t.to(torch.float32)
         
-        # 1. Map to hypersphere
-        x0 = torch.sqrt(flow_start_probs + 1e-10)
+        # 1. get top-k indices
+        _, topk_indices = torch.topk(unmask_logits, k=top_k, dim=-1) 
         
-        # 2. Optimized dot product
-        x0_target = x0.gather(dim=-1, index=safe_labels.unsqueeze(-1))
-        # Prevent exact 1.0 to avoid acos gradient explosion
+        # 2. add gt index to the candidate set, ensuring GT is always included in the small subset of K+1 dimensions
+        gt_indices = safe_labels.unsqueeze(-1)
+        active_indices = torch.cat([topk_indices, gt_indices], dim=-1) 
+        
+        # 3. take only the k+1 logits for the active indices, resulting in a small tensor of shape [B, L, K+1]
+        active_logits = unmask_logits.gather(dim=-1, index=active_indices).to(torch.float32)
+        
+        # 4. prevent duplicate indices (where GT is already in top-k) from being selected as noise by masking them with -inf.
+        mask_duplicate = (topk_indices == gt_indices)
+        mask_duplicate = torch.cat([mask_duplicate, torch.zeros_like(mask_duplicate[..., :1])], dim=-1)
+        active_logits.masked_fill_(mask_duplicate, float('-inf'))
+        
+        # 5. flow matching with noise
+        flow_start_probs = F.softmax(active_logits, dim=-1)
+        
+        # 5.0 Map to hypersphere
+        x0 = torch.sqrt(flow_start_probs + 1e-10)
+        x0.masked_fill_(mask_duplicate, 0.0)
+
+        # 5.1 GT is the last dimension in this micro space, so the dot product with GT is just the last dimension of x0
+        x0_target = x0[..., -1:]
         dot = torch.clamp(x0_target, -1.0, 1.0 - 1e-6) 
         theta = torch.acos(dot)
 
-        # 3. Calculate interpolation coefficients
+        # 5.2 Calculate interpolation coefficients
         t_scaled = t.view(-1, 1, 1)
         sin_theta = torch.sin(theta)
         denom = sin_theta + 1e-10
@@ -515,44 +532,43 @@ def main():
         coeff_x1_slerp = torch.sin((1.0 - t_scaled) * theta) / denom
         coeff_x0_slerp = torch.sin(t_scaled * theta) / denom
         
-        # Handle small angles (Lerp fallback)
         small_angle_mask = (theta < 1e-4)
-        
-        # Use torch.where to avoid NaN propagation in gradients
         coeff_x1 = torch.where(small_angle_mask, 1.0 - t_scaled, coeff_x1_slerp)
         coeff_x0 = torch.where(small_angle_mask, t_scaled, coeff_x0_slerp)
         
-        # 4. Calculate xt
+        # 5.3 Calculate xt
         xt = x0 * coeff_x0
-        xt.scatter_add_(dim=-1, index=safe_labels.unsqueeze(-1), src=coeff_x1)
+        # x1 is [0, 0, ..., 1], so we can directly add coeff_x1 to the last dimension of xt
+        xt[..., -1:] = xt[..., -1:] + coeff_x1
         
-        # 5. Add noise on tangent space of the sphere
-        # Variance scheduling: sigma(t) = sigma_max * 4*t*(1-t)
-        # This ensures sigma=0 at t=0 and t=1, peaks at t=0.5
+        # 5.4 Add noise on tangent space
         safe_t = torch.clamp(t.squeeze(-1), min=1e-5, max=1.0 - 1e-5)
-        sigma = sigma_max * 4.0 * safe_t * (1.0 - safe_t)  # shape: (B,)
+        sigma = sigma_max * 4.0 * safe_t * (1.0 - safe_t) 
         
-        # Generate Gaussian noise in ambient space
-        noise = torch.randn_like(xt)  # shape: (B, L, V)
+        noise = torch.randn_like(xt) # [B, L, K+1]
+        noise.masked_fill_(mask_duplicate, 0.0)
+        dot_product = (noise * xt).sum(dim=-1, keepdim=True)
+        noise_tangent = noise - dot_product * xt
         
-        # Remove radial component to keep only tangent space noise
-        # radial component: <noise, xt> * xt / ||xt||^2
-        dot_product = (noise * xt).sum(dim=-1, keepdim=True)  # (B, L, 1)
-        noise_tangent = noise - dot_product * xt  # remove radial part
-        
-        # Scale noise by sigma and add to xt
-        sigma_expanded = sigma.view(-1, 1, 1)  # (B, 1, 1)
+        sigma_expanded = sigma.view(-1, 1, 1)
         xt_noisy = xt + sigma_expanded * noise_tangent
+        xt_noisy = xt_noisy / (torch.norm(xt_noisy, dim=-1, keepdim=True) + 1e-10)
         
-        # Renormalize to stay on unit sphere
-        xt = xt_noisy / (torch.norm(xt_noisy, dim=-1, keepdim=True) + 1e-10)
-        
-        # 6. Map back to probability space
-        flow_t_probs = torch.pow(xt, 2)
-        flow_t_probs = flow_t_probs / (flow_t_probs.sum(dim=-1, keepdim=True) + 1e-10)
+        # Map back to probability space
+        flow_t_probs_small = torch.pow(xt_noisy, 2)
+        flow_t_probs_small.masked_fill_(mask_duplicate, 0.0)
+        flow_t_probs_small = flow_t_probs_small / (flow_t_probs_small.sum(dim=-1, keepdim=True) + 1e-10)
 
-        return flow_t_probs.to(dtype=model.dtype)
+        # 6. safely refill with probabilities
+        flow_t_probs = torch.zeros_like(unmask_logits)
+        flow_t_probs.scatter_add_(
+            dim=-1, 
+            index=active_indices, 
+            src=flow_t_probs_small.to(dtype=unmask_logits.dtype)
+        )
 
+        return flow_t_probs
+    
 
     # * ---- training loop ----
     # Counter for actual optimizer updates (Global Steps) is initialized before checkpoint loading
@@ -593,8 +609,7 @@ def main():
                 )
 
                 # Calculate the probability after unmasking forward as starting point for flow matching forward
-                flow_start_probs = F.softmax(unmask_logits.detach(), dim=-1) # TODO: Ablation: Prevent hyper-large computation graph or not ?
-                flow_t_probs = flowmatch_sampling(flow_start_probs, t_batch, labels, sigma_max=config.training.sigma_max)
+                flow_t_probs = flowmatch_sampling(unmask_logits.detach(), t_batch, labels, sigma_max=config.training.sigma_max, top_k=config.training.top_k)
                 
                 flowmatch_loss_lm, acc = flowmatch_forward_process(
                     input_ids=input_ids,
