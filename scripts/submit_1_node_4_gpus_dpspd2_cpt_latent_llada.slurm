@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sft_llada
-#SBATCH --partition=h100
+#SBATCH --partition=a100
 #SBATCH --account=aszalay1_ssci
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
@@ -30,11 +30,11 @@ export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 
 # run script
-# Using the configuration for 1 node with 8 GPUs (matching the SBATCH request)
+# Using the configuration for 1 node with 4 GPUs (matching the SBATCH request)
 # Ensure the accelerate config matches the resources requested
 ACCELERATE_CONFIG="accelerate_configs/1_node_4_gpus_deepspeed_zero2.yaml"
-SCRIPT="train/cpt_latent_llada_w_noise.py"
-CONFIG="configs/cpt_latent_llada_w_noise.yaml"
+SCRIPT="train/cpt_latent_llada_w_sim.py"
+CONFIG="configs/cpt_latent_llada_w_sim.yaml"
 
 echo "Starting training with config: $CONFIG"
 

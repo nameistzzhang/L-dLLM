@@ -29,11 +29,11 @@ export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
 
 # run script
-# Using the configuration for 1 node with 8 GPUs (matching the SBATCH request)
+# Using the configuration for 1 node with 2 GPUs (matching the SBATCH request)
 # Ensure the accelerate config matches the resources requested
 ACCELERATE_CONFIG="accelerate_configs/1_node_2_gpus_deepspeed_zero2.yaml"
-SCRIPT="train/cpt_latent_llada.py"
-CONFIG="configs/cpt_latent_llada.yaml"
+SCRIPT="train/cpt_latent_llada_w_sim.py"
+CONFIG="configs/cpt_latent_llada_w_sim.yaml"
 
 echo "Starting training with config: $CONFIG"
 
