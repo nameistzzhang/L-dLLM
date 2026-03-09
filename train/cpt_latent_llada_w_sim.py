@@ -540,9 +540,9 @@ def main():
         vocab_size = next(iter(unwrapped_model.parameters())).shape[0]
     
     # schedule temperature for flow matching teacher forcing
-    curriculum_steps = max(1, max_train_steps * 0.5)
+    curriculum_steps = max(1, max_train_steps * 1.0)
     temp_correct_start = config.training.temp_correct_start
-    temp_incorrect_start = config.training.temp_incorrect_start
+    guidance_incorrect_start = config.training.guidance_incorrect_start
 
 
     # * ---- training loop ----
@@ -632,24 +632,31 @@ def main():
 
                     # Schedule temperature for teacher forcing based on global update step and curriculum steps
                     progress = min(global_update_step / curriculum_steps, 1.0)
-                    Temp_correct = temp_correct_start + (1.0 - temp_correct_start) * progress
-                    Temp_incorrect = temp_incorrect_start + (1.0 - temp_incorrect_start) * progress
+                    Temp_correct = temp_correct_start + (1.0 - temp_correct_start) * progress # For sharpening the distribution of correct predictions
+                    guidance_rate = guidance_incorrect_start + (0.0 - guidance_incorrect_start) * progress # For guiding the wrongly predicted positions
 
                     # Get predictions and correct mask
                     preds = torch.argmax(detached_logits, dim=-1) # (B, T)
                     correct_mask = (preds == labels) & p_mask_lm
                     incorrect_mask = (preds != labels) & p_mask_lm
 
-                    # Apply specific temperatures to the correct and incorrect positions
+                    # Apply specific temperatures to the correct positions
                     temp_scaler = torch.ones_like(detached_logits, dtype=torch.float32)
                     temp_scaler = torch.where(correct_mask.unsqueeze(-1), Temp_correct, temp_scaler)
-                    temp_scaler = torch.where(incorrect_mask.unsqueeze(-1), Temp_incorrect, temp_scaler)
+                    base_probs = F.softmax(detached_logits.float() / temp_scaler, dim=-1).to(model.dtype) # prob after correct token sharpening
 
-                    # Perform scaling and softmax operation
-                    curr_end_probs = F.softmax(detached_logits.float() / temp_scaler, dim=-1).to(model.dtype)
+                    safe_labels = torch.where(labels != -100, labels, 0)
+                    gt_one_hot = F.one_hot(safe_labels, num_classes=vocab_size).to(model.dtype)
+                    guided_probs = (1.0 - guidance_rate) * base_probs + guidance_rate * gt_one_hot
+
+                    curr_end_probs = torch.where(
+                        incorrect_mask.unsqueeze(-1),
+                        guided_probs,
+                        base_probs
+                    )
 
                     batch_flowmatch_loss += stage_loss.detach() / num_sim_stages
-                    batch_flowmatch_acc += stage_acc.detach() if isinstance(stage_acc, torch.Tensor) else stage_acc
+                    batch_flowmatch_acc += (stage_acc.detach() if isinstance(stage_acc, torch.Tensor) else stage_acc) / num_sim_stages
                     batch_stage_losses.append(stage_loss.detach())
                     batch_stage_accs.append(stage_acc.detach() if isinstance(stage_acc, torch.Tensor) else stage_acc)
 
