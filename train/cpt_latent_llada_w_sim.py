@@ -524,7 +524,7 @@ def main():
         return flow_t_probs.to(dtype=model.dtype, device=flow_start_probs.device)
 
 
-    # * ---- training loop ----
+    # * ---- training loop preparation ----
     # Counter for actual optimizer updates (Global Steps) is initialized before checkpoint loading
     if global_update_step is None:
         global_update_step = 0
@@ -539,6 +539,13 @@ def main():
         # Fallback for dynamic fetching if specific attributes are hidden
         vocab_size = next(iter(unwrapped_model.parameters())).shape[0]
     
+    # schedule temperature for flow matching teacher forcing
+    curriculum_steps = max(1, max_train_steps * 0.5)
+    temp_correct_start = config.training.temp_correct_start
+    temp_incorrect_start = config.training.temp_incorrect_start
+
+
+    # * ---- training loop ----
     for epoch in range(first_epoch, num_train_epochs):
         
         model.train()
@@ -561,7 +568,7 @@ def main():
                 
                 import contextlib
 
-                # Prepare batch and move to device
+                # Prepare batch, move to device
                 input_ids = batch["input_ids"].to(accelerator.device)
                 labels    = batch["labels"].to(accelerator.device)
                 p_mask_lm = batch["p_mask_lm"].to(accelerator.device)
@@ -572,10 +579,10 @@ def main():
                 buckets = None
                 sim_t_list = []
                 if sim_t_sampling == "uniform":
-                    buckets = torch.linspace(0.0, 1.0, num_sim_stages + 1)
+                    buckets = torch.linspace(0.0, 1.0, num_sim_stages + 1, device=accelerator.device)
                 elif sim_t_sampling == "clean_noise_focused":
                     # Use cosine spacing to densely sample near 0 and 1, while keeping it strictly bounded in [0, 1]
-                    uniform_buckets = torch.linspace(0.0, 1.0, num_sim_stages + 1)
+                    uniform_buckets = torch.linspace(0.0, 1.0, num_sim_stages + 1, device=accelerator.device)
                     buckets = (1.0 - torch.cos(uniform_buckets * torch.pi)) / 2.0
                 else:
                     raise ValueError(f"Unknown sim_t_sampling: {sim_t_sampling}")
@@ -621,12 +628,30 @@ def main():
                         accelerator.backward(scaled_stage_loss)
 
                     # Compute probabilities for the next stage's sampling without tracking gradients
-                    curr_end_probs = F.softmax(stage_logits.detach(), dim=-1)
+                    detached_logits = stage_logits.detach()
+
+                    # Schedule temperature for teacher forcing based on global update step and curriculum steps
+                    progress = min(global_update_step / curriculum_steps, 1.0)
+                    Temp_correct = temp_correct_start + (1.0 - temp_correct_start) * progress
+                    Temp_incorrect = temp_incorrect_start + (1.0 - temp_incorrect_start) * progress
+
+                    # Get predictions and correct mask
+                    preds = torch.argmax(detached_logits, dim=-1) # (B, T)
+                    correct_mask = (preds == labels) & p_mask_lm
+                    incorrect_mask = (preds != labels) & p_mask_lm
+
+                    # Apply specific temperatures to the correct and incorrect positions
+                    temp_scaler = torch.ones_like(detached_logits, dtype=torch.float32)
+                    temp_scaler = torch.where(correct_mask.unsqueeze(-1), Temp_correct, temp_scaler)
+                    temp_scaler = torch.where(incorrect_mask.unsqueeze(-1), Temp_incorrect, temp_scaler)
+
+                    # Perform scaling and softmax operation
+                    curr_end_probs = F.softmax(detached_logits.float() / temp_scaler, dim=-1).to(model.dtype)
 
                     batch_flowmatch_loss += stage_loss.detach() / num_sim_stages
-                    batch_flowmatch_acc += stage_acc / num_sim_stages
+                    batch_flowmatch_acc += stage_acc.detach() if isinstance(stage_acc, torch.Tensor) else stage_acc
                     batch_stage_losses.append(stage_loss.detach())
-                    batch_stage_accs.append(stage_acc)
+                    batch_stage_accs.append(stage_acc.detach() if isinstance(stage_acc, torch.Tensor) else stage_acc)
 
                     if stage_idx < num_sim_stages - 1:
                         t_next = t_batch[stage_idx + 1]
