@@ -521,13 +521,23 @@ def main():
         flow_t_probs = flow_t_probs / (flow_t_probs.sum(dim=-1, keepdim=True) + 1e-10)
 
         # Return to model dtype (bfloat16)
-        return flow_t_probs.to(dtype=model.dtype)
+        return flow_t_probs.to(dtype=model.dtype, device=flow_start_probs.device)
 
 
     # * ---- training loop ----
     # Counter for actual optimizer updates (Global Steps) is initialized before checkpoint loading
     if global_update_step is None:
         global_update_step = 0
+    
+    # get accurate vocab size
+    unwrapped_model = accelerator.unwrap_model(model)
+    if hasattr(unwrapped_model, "get_input_embeddings"):
+        vocab_size = unwrapped_model.get_input_embeddings().weight.shape[0]
+    elif hasattr(unwrapped_model, "transformer") and hasattr(unwrapped_model.transformer, "wte"):
+        vocab_size = unwrapped_model.transformer.wte.weight.shape[0]
+    else:
+        # Fallback for dynamic fetching if specific attributes are hidden
+        vocab_size = next(iter(unwrapped_model.parameters())).shape[0]
     
     for epoch in range(first_epoch, num_train_epochs):
         
@@ -579,8 +589,7 @@ def main():
                 t_batch = torch.flip(t_batch, dims=[0])
                 
                 # Arrange the start probs of FM simulation and labels
-                vocab_size = model.config.vocab_size
-                flow_start_probs = F.one_hot(input_ids, num_classes=vocab_size).to(torch.float32)
+                flow_start_probs = F.one_hot(input_ids, num_classes=vocab_size).to(dtype=model.dtype)
                 curr_start_probs = flow_start_probs.clone()
 
                 # The Simulation Loop

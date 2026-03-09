@@ -1,10 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=sft_llada
-#SBATCH --partition=a100
+#SBATCH --partition=h100
 #SBATCH --account=aszalay1_ssci
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
 #SBATCH --time=24:00:00
+#SBATCH --mem=512G
 #SBATCH --exclude=c001
 
 # environment setup

@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: False
-  run_name: "cpt_latent_llada_w_sim-8-uniform-sampling_core_clean_focused_26-03-09_0015" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_w_sim-4-uniform-sampling_core_clean_focused_26-03-09_0015" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -18,8 +18,8 @@ dataset:
 
 training:
     gradient_checkpointing_enable: False # if the sequence is very large, set as True
-    gradient_accumulation_steps: 32
-    batch_size_lm: 1 # the total batch size is num_node * num_gpu_per_node * gradient_accumulation_steps * batch_size_lm
+    gradient_accumulation_steps: 8
+    batch_size_lm: 2 # the total batch size is num_node * num_gpu_per_node * gradient_accumulation_steps * batch_size_lm
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 32
@@ -34,8 +34,8 @@ training:
     max_gen_length: 2048
     max_prompt_len: 1024
     warmup: False # whether in the warmup training phase of the latent gate
-    flowmatch_loss_weighting_strategy: "clean_focused" # "constant", "symmetric", "noise_focused", "clean_focused"
-    num_sim_stages: 8
+    flowmatch_loss_weighting_strategy: "symmetric" # "constant", "symmetric", "noise_focused", "clean_focused"
+    num_sim_stages: 4
     sim_t_sampling: "uniform" # "uniform", "clean_noise_focused"
 
 
