@@ -1,6 +1,7 @@
 import argparse
 import os
 import shutil
+import json
 
 # 1. Define base and cache directories on the scratch disk
 BASE_DIR = "/scratch/aszalay1/tianze/cpt_data"
@@ -19,7 +20,7 @@ from huggingface_hub import hf_hub_download
 NEW_DATASETS_CONFIG = {
     "OpenThoughts-114k": {"repo": "open-thoughts/OpenThoughts-114k", "name": None, "data_dir": None, "split": "train"},
     "MathInstruct": {"repo": "TIGER-Lab/MathInstruct", "name": None, "data_dir": None, "split": "train"},
-    "starcoder2": {"repo": "bigcode/the-stack-v2", "name": None, "data_dir": "python", "split": "train"},
+    "starcoder2": {"repo": "bigcode/the-stack-v2", "name": None, "data_dir": "Python", "split": "train"},
     "CodeFeedback": {"repo": "m-a-p/CodeFeedback-Filtered-Instruction", "name": None, "data_dir": None, "split": "train"},
     "HelpSteer2": {"repo": "nvidia/HelpSteer2", "name": None, "data_dir": None, "split": "train"},
     "Magpie": {"repo": "Magpie-Align/Magpie-Pro-300K-Filtered", "name": None, "data_dir": None, "split": "train"},
@@ -46,20 +47,56 @@ dataset = args.dataset
 dataset_dir = os.path.join(BASE_DIR, dataset)
 os.makedirs(dataset_dir, exist_ok=True)
 
-if dataset in NEW_DATASETS_CONFIG:
+if dataset in ["fineweb-edu", "starcoder2"]:
+    # Special streaming logic for massive pretraining datasets
+    config = NEW_DATASETS_CONFIG[dataset]
+    output_path = os.path.join(dataset_dir, f"{dataset}.jsonl")
+    
+    # Target 0.5B tokens for web, 0.75B tokens for code
+    if dataset == "fineweb-edu":
+        target_docs = 500000 
+    else:
+        target_docs = 750000
+        
+    print(f"Starting streaming download for {dataset}...")
+    print(f"Targeting {target_docs} documents.")
+    
+    # Prepare streaming arguments dynamically
+    stream_kwargs = {"split": config["split"], "streaming": True}
+    if config["name"]:
+        stream_kwargs["name"] = config["name"]
+    if config["data_dir"]:
+        stream_kwargs["data_dir"] = config["data_dir"]
+        
+    # Enable streaming to bypass caching the entire dataset
+    ds = load_dataset(config["repo"], **stream_kwargs)
+    
+    # Write directly to JSONL on the fly
+    with open(output_path, "w", encoding="utf-8") as f:
+        for i, example in enumerate(ds):
+            if i >= target_docs:
+                break
+            
+            f.write(json.dumps(example, ensure_ascii=False) + "\n")
+            
+            # Print progress every 50,000 documents
+            if (i + 1) % 50000 == 0:
+                print(f"Streamed {i + 1} / {target_docs} documents...")
+                
+    print(f"Successfully saved {dataset} to {output_path}")
+
+elif dataset in NEW_DATASETS_CONFIG:
+    # Standard download logic for regular sized datasets
     config = NEW_DATASETS_CONFIG[dataset]
     
-    # Prepare keyword arguments dynamically
     load_kwargs = {"split": config["split"], "cache_dir": CACHE_DIR}
     if config["name"]:
         load_kwargs["name"] = config["name"]
     if config["data_dir"]:
         load_kwargs["data_dir"] = config["data_dir"]
         
-    # Load dataset with explicitly specified cache_dir and configs
     ds = load_dataset(config["repo"], **load_kwargs)
     
-    # Export to JSONL format inside the dedicated folder
     output_path = os.path.join(dataset_dir, f"{dataset}.jsonl")
     ds.to_json(output_path, force_ascii=False)
     print(f"Successfully saved {dataset} to {output_path}")
@@ -71,7 +108,6 @@ else:
     else:
         split = "test"
 
-    # Download with explicitly specified cache_dir
     cached_path = hf_hub_download(
         repo_id=f"Gen-Verse/{dataset}",
         repo_type="dataset",
@@ -79,7 +115,6 @@ else:
         cache_dir=CACHE_DIR
     )
     
-    # Copy the file from HF cache to the dedicated folder
     output_path = os.path.join(dataset_dir, f"{dataset}.json")
     shutil.copy(cached_path, output_path)
     print(f"Successfully saved {dataset} to {output_path}")

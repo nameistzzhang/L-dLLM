@@ -2,8 +2,7 @@
 
 # Define the array of all datasets to download
 DATASETS=( 
-    "OpenThoughts-114k" "MathInstruct" "starcoder2" "CodeFeedback" 
-    "HelpSteer2" "Magpie" "fineweb-edu"
+    "starcoder2" "fineweb-edu"
 )
 
 # Define your python script name here
