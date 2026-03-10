@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: False
-  run_name: "cpt_latent_llada_w-sim-4_uniform-sampling_teacher-forcing_symmetric_core_1720" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_w-sim-4_uniform-sampling_teacher-forcing_symmetric_core_1759" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -38,7 +38,7 @@ training:
     num_sim_stages: 4
     sim_t_sampling: "uniform" # "uniform", "clean_noise_focused"
     temp_correct_start: 0.1
-    guidance_incorrect_start: 0.8
+    guidance_incorrect_start: 0.5
 
 
 optimizer:

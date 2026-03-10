@@ -540,7 +540,7 @@ def main():
         vocab_size = next(iter(unwrapped_model.parameters())).shape[0]
     
     # schedule temperature for flow matching teacher forcing
-    curriculum_steps = max(1, max_train_steps * 1.0)
+    curriculum_steps = max(1, max_train_steps * 0.5)
     temp_correct_start = config.training.temp_correct_start
     guidance_incorrect_start = config.training.guidance_incorrect_start
 
