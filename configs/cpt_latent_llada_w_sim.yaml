@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: False
-  run_name: "cpt_latent_llada_w-sim-4_uniform-sampling_teacher-forcing-cosine-decay_symmetric_core_260310_1005" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_w-sim-4_uniform-sampling_teacher-forcing-cosine-decay_symmetric_core_260310_1347" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -37,8 +37,8 @@ training:
     flowmatch_loss_weighting_strategy: "symmetric" # "constant", "symmetric", "noise_focused", "clean_focused"
     num_sim_stages: 4
     sim_t_sampling: "uniform" # "uniform", "clean_noise_focused"
-    temp_correct_start: 0.6
-    guidance_incorrect_start: 0.2
+    temp_correct_start: 0.3
+    guidance_incorrect_start: 0.3
     teacher_forcing_rate: 0.8
 
 

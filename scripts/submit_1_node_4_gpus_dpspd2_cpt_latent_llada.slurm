@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=24
 #SBATCH --time=24:00:00
 #SBATCH --mem=512G
-#SBATCH --exclude=c001
+#SBATCH --exclude=c001,h07
 
 # environment setup
 module purge
