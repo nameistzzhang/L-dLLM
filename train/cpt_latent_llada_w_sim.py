@@ -540,7 +540,7 @@ def main():
         vocab_size = next(iter(unwrapped_model.parameters())).shape[0]
     
     # schedule temperature for flow matching teacher forcing
-    curriculum_steps = max(1, max_train_steps * 0.5)
+    curriculum_steps = max(1, max_train_steps * config.training.teacher_forcing_rate)
     temp_correct_start = config.training.temp_correct_start
     guidance_incorrect_start = config.training.guidance_incorrect_start
 
@@ -630,10 +630,11 @@ def main():
                     # Compute probabilities for the next stage's sampling without tracking gradients
                     detached_logits = stage_logits.detach()
 
-                    # Schedule temperature for teacher forcing based on global update step and curriculum steps
-                    progress = min(global_update_step / curriculum_steps, 1.0)
-                    Temp_correct = temp_correct_start + (1.0 - temp_correct_start) * progress # For sharpening the distribution of correct predictions
-                    guidance_rate = guidance_incorrect_start + (0.0 - guidance_incorrect_start) * progress # For guiding the wrongly predicted positions
+                    # Schedule temperature for teacher forcing based on global update step and curriculum steps with cosine annealing
+                    progress_ratio = min(global_update_step / curriculum_steps, 1.0)
+                    cosine_progress = (1 - math.cos(progress_ratio * math.pi)) / 2  # Cosine annealing: smooth S-curve from 0 to 1
+                    temp_correct = temp_correct_start + (1.0 - temp_correct_start) * cosine_progress # For sharpening the distribution of correct predictions
+                    guidance_rate = guidance_incorrect_start + (0.0 - guidance_incorrect_start) * cosine_progress # For guiding the wrongly predicted positions
 
                     # Get predictions and correct mask
                     preds = torch.argmax(detached_logits, dim=-1) # (B, T)
@@ -642,7 +643,7 @@ def main():
 
                     # Apply specific temperatures to the correct positions
                     temp_scaler = torch.ones_like(detached_logits, dtype=torch.float32)
-                    temp_scaler = torch.where(correct_mask.unsqueeze(-1), Temp_correct, temp_scaler)
+                    temp_scaler = torch.where(correct_mask.unsqueeze(-1), temp_correct, temp_scaler)
                     base_probs = F.softmax(detached_logits.float() / temp_scaler, dim=-1).to(model.dtype) # prob after correct token sharpening
 
                     safe_labels = torch.where(labels != -100, labels, 0)
@@ -705,7 +706,9 @@ def main():
                         "loss": flowmatch_loss_meter.avg,
                         "flowmatch_loss": flowmatch_loss_meter.avg,
                         "flowmatch_accuracy": flowmatch_acc_meter.avg,
-                        "lr": lr_scheduler.get_last_lr()[0]
+                        "lr": lr_scheduler.get_last_lr()[0],
+                        "temp_correct": temp_correct,
+                        "guidance_rate_incorrect": guidance_rate
                     }                    
                     for i in range(num_sim_stages):
                         log_dict[f"Stage_Loss/stage_{i}"] = stage_loss_meters[i].avg
