@@ -1,21 +1,29 @@
 import argparse
 import os
 import shutil
+
+# 1. Define base and cache directories on the scratch disk
+BASE_DIR = "/scratch/aszalay1/tianze/cpt_data"
+CACHE_DIR = os.path.join(BASE_DIR, "hf_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+# 2. Force Hugging Face to use the scratch disk for all caching BEFORE importing
+os.environ["HF_HOME"] = CACHE_DIR
+os.environ["HF_DATASETS_CACHE"] = CACHE_DIR
+
+# Now it is safe to import huggingface libraries
 from datasets import load_dataset
 from huggingface_hub import hf_hub_download
 
-# Define the base directory for storing datasets
-BASE_DIR = "/scratch/aszalay1/tianze/cpt_data"
-
 # Configuration dictionary for the newly added Hugging Face datasets
 NEW_DATASETS_CONFIG = {
-    "OpenThoughts-114k": {"repo": "open-thoughts/OpenThoughts-114k", "subset": None, "split": "train"},
-    "MathInstruct": {"repo": "TIGER-Lab/MathInstruct", "subset": None, "split": "train"},
-    "starcoder2": {"repo": "bigcode/starcoder2-dataset", "subset": "python", "split": "train"},
-    "CodeFeedback": {"repo": "m-a-p/CodeFeedback-Filtered-Instruction", "subset": None, "split": "train"},
-    "HelpSteer2": {"repo": "nvidia/HelpSteer2", "subset": None, "split": "train"},
-    "Magpie": {"repo": "Magpie-Align/Magpie-Pro-300K-Filtered", "subset": None, "split": "train"},
-    "fineweb-edu": {"repo": "HuggingFaceFW/fineweb-edu", "subset": "sample-10BT", "split": "train"}
+    "OpenThoughts-114k": {"repo": "open-thoughts/OpenThoughts-114k", "name": None, "data_dir": None, "split": "train"},
+    "MathInstruct": {"repo": "TIGER-Lab/MathInstruct", "name": None, "data_dir": None, "split": "train"},
+    "starcoder2": {"repo": "bigcode/the-stack-v2", "name": None, "data_dir": "python", "split": "train"},
+    "CodeFeedback": {"repo": "m-a-p/CodeFeedback-Filtered-Instruction", "name": None, "data_dir": None, "split": "train"},
+    "HelpSteer2": {"repo": "nvidia/HelpSteer2", "name": None, "data_dir": None, "split": "train"},
+    "Magpie": {"repo": "Magpie-Align/Magpie-Pro-300K-Filtered", "name": None, "data_dir": None, "split": "train"},
+    "fineweb-edu": {"repo": "HuggingFaceFW/fineweb-edu", "name": "sample-10BT", "data_dir": None, "split": "train"}
 }
 
 # Legacy datasets from Gen-Verse
@@ -41,11 +49,15 @@ os.makedirs(dataset_dir, exist_ok=True)
 if dataset in NEW_DATASETS_CONFIG:
     config = NEW_DATASETS_CONFIG[dataset]
     
-    # Load dataset with or without a specific subset
-    if config["subset"]:
-        ds = load_dataset(config["repo"], config["subset"], split=config["split"])
-    else:
-        ds = load_dataset(config["repo"], split=config["split"])
+    # Prepare keyword arguments dynamically
+    load_kwargs = {"split": config["split"], "cache_dir": CACHE_DIR}
+    if config["name"]:
+        load_kwargs["name"] = config["name"]
+    if config["data_dir"]:
+        load_kwargs["data_dir"] = config["data_dir"]
+        
+    # Load dataset with explicitly specified cache_dir and configs
+    ds = load_dataset(config["repo"], **load_kwargs)
     
     # Export to JSONL format inside the dedicated folder
     output_path = os.path.join(dataset_dir, f"{dataset}.jsonl")
@@ -59,10 +71,12 @@ else:
     else:
         split = "test"
 
+    # Download with explicitly specified cache_dir
     cached_path = hf_hub_download(
         repo_id=f"Gen-Verse/{dataset}",
         repo_type="dataset",
-        filename=f"{split}/{dataset}.json"
+        filename=f"{split}/{dataset}.json",
+        cache_dir=CACHE_DIR
     )
     
     # Copy the file from HF cache to the dedicated folder
