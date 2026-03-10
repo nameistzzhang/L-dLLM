@@ -2,7 +2,7 @@
 
 # Define the array of all datasets to download
 DATASETS=( 
-    "starcoder2" "fineweb-edu"
+    "starcoder2"
 )
 
 # Define your python script name here
