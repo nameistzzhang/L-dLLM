@@ -1,6 +1,8 @@
 import argparse
 import os
 import shutil
+import json
+from itertools import islice
 
 # 1. Define base and cache directories on the scratch disk
 BASE_DIR = "/scratch/aszalay1/tianze/cpt_data"
@@ -46,7 +48,39 @@ dataset = args.dataset
 dataset_dir = os.path.join(BASE_DIR, dataset)
 os.makedirs(dataset_dir, exist_ok=True)
 
-if dataset in NEW_DATASETS_CONFIG:
+if dataset == "fineweb-edu":
+    config = NEW_DATASETS_CONFIG[dataset]
+    print(f"Initializing streaming mode for {dataset}...")
+    
+    # 1. Enable streaming=True to process data on the fly without downloading everything
+    load_kwargs = {
+        "split": config["split"], 
+        "name": config["name"], 
+        "streaming": True
+    }
+    ds = load_dataset(config["repo"], **load_kwargs)
+    
+    output_path = os.path.join(dataset_dir, f"{dataset}.jsonl")
+    print(f"Streaming and batch-writing to {output_path}. This may take a while...")
+    
+    # 2. Process and write in chunks to optimize file I/O speed
+    CHUNK_SIZE = 10000 
+    ds_iterator = iter(ds)
+    
+    with open(output_path, "w", encoding="utf-8") as f:
+        while True:
+            # Extract a chunk of data from the stream
+            chunk = list(islice(ds_iterator, CHUNK_SIZE))
+            if not chunk:
+                break # End of stream
+            
+            # Serialize the chunk to JSON lines and write to disk
+            lines = [json.dumps(example, ensure_ascii=False) for example in chunk]
+            f.write("\n".join(lines) + "\n")
+            
+    print(f"Successfully streamed and saved {dataset} to {output_path}")
+    
+elif dataset in NEW_DATASETS_CONFIG:
     config = NEW_DATASETS_CONFIG[dataset]
     
     # Prepare keyword arguments dynamically
