@@ -58,7 +58,7 @@ if dataset == "fineweb-edu":
         "split": config["split"], 
         "name": config["name"], 
         "cache_dir": CACHE_DIR,
-        "num_proc": 8  # Enable multiprocessing for much faster downloading and processing
+        "num_proc": 16  # Enable multiprocessing for much faster downloading and processing
     }
     
     # This will download the parquet files to CACHE_DIR efficiently
