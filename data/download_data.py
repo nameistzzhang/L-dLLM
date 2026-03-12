@@ -50,36 +50,28 @@ os.makedirs(dataset_dir, exist_ok=True)
 
 if dataset == "fineweb-edu":
     config = NEW_DATASETS_CONFIG[dataset]
-    print(f"Initializing streaming mode for {dataset}...")
+    # Use flush=True to ensure the log is written immediately
+    print(f"Starting optimized multi-threaded download for {dataset}...", flush=True)
     
-    # 1. Enable streaming=True to process data on the fly without downloading everything
+    # 1. Download and cache using HF's optimized engine
     load_kwargs = {
         "split": config["split"], 
         "name": config["name"], 
-        "streaming": True
+        "cache_dir": CACHE_DIR,
+        "num_proc": 8  # Enable multiprocessing for much faster downloading and processing
     }
+    
+    # This will download the parquet files to CACHE_DIR efficiently
     ds = load_dataset(config["repo"], **load_kwargs)
     
     output_path = os.path.join(dataset_dir, f"{dataset}.jsonl")
-    print(f"Streaming and batch-writing to {output_path}. This may take a while...")
+    print(f"Exporting dataset to {output_path}...", flush=True)
     
-    # 2. Process and write in chunks to optimize file I/O speed
-    CHUNK_SIZE = 10000 
-    ds_iterator = iter(ds)
+    # 2. Export to JSONL using Arrow memory-mapping
+    ds.to_json(output_path, force_ascii=False, num_proc=8)
     
-    with open(output_path, "w", encoding="utf-8") as f:
-        while True:
-            # Extract a chunk of data from the stream
-            chunk = list(islice(ds_iterator, CHUNK_SIZE))
-            if not chunk:
-                break # End of stream
-            
-            # Serialize the chunk to JSON lines and write to disk
-            lines = [json.dumps(example, ensure_ascii=False) for example in chunk]
-            f.write("\n".join(lines) + "\n")
-            
-    print(f"Successfully streamed and saved {dataset} to {output_path}")
-    
+    print(f"Successfully saved {dataset} to {output_path}", flush=True)
+
 elif dataset in NEW_DATASETS_CONFIG:
     config = NEW_DATASETS_CONFIG[dataset]
     
