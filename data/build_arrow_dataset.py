@@ -28,7 +28,7 @@ MAX_SEQ_LEN = 4096
 NUM_EOS_PADDING = 32
 
 INPUT_BASE_DIR = "/scratch/aszalay1/tianze/cpt_data"
-OUTPUT_ARROW_DIR = "/scratch/aszalay1/tianze/cpt_data/3b_pyarrow/"
+OUTPUT_ARROW_DIR = "/scratch/aszalay1/tianze/cpt_data/fineweb_pyarrow/"
 CACHE_DIR = "/scratch/aszalay1/tianze/cpt_data/hf_cache/"
 
 GENERAL_TEMPLATE = """<|startoftext|><|start_header_id|>user<|end_header_id|>\n{{problem}}<|eot_id|><|startoftext|><|start_header_id|>assistant<|end_header_id|>\n"""
@@ -185,12 +185,13 @@ class SafeFlowMatchingPacker:
 # 4. GENERATOR PIPELINE
 # =============================================================================
 DATASETS_TO_PROCESS = [
-    "OpenThoughts-114k", 
-    "MathInstruct", 
-    "CodeFeedback", 
-    "HelpSteer2", 
-    "Magpie", 
-    "starcoder2"
+    # "OpenThoughts-114k", 
+    # "MathInstruct", 
+    # "CodeFeedback", 
+    # "HelpSteer2", 
+    # "Magpie", 
+    # "starcoder2",
+    "fineweb-edu",
 ]
 
 def flow_matching_data_generator():
