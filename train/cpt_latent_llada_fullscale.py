@@ -2,7 +2,6 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
-import json
 import logging
 import math
 import datetime
@@ -15,22 +14,23 @@ from transformers import AutoTokenizer
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import set_seed
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from tqdm.auto import tqdm
-from datasets import load_from_disk
+from datasets import load_from_disk, concatenate_datasets
+import contextlib
 
 from train.utils import get_config, flatten_omega_conf, AverageMeter
 from models import LatentLLaDAModelLM
-from train.prompting_utils import UniversalPrompting
 from models.lr_schedulers import get_scheduler
 from models.logging import set_verbosity_info, set_verbosity_error
 
 
 logger = get_logger(__name__, log_level="INFO")
-
+DEBUG_MODE = os.environ.get("DEBUG_MODE", "0") == "1"
 
 def main():
+
 
     # * ---- load and parse configuration ----
     config = get_config()
@@ -114,15 +114,11 @@ def main():
 
     pretrained_model = config.model.pretrained_model
     tokenizer = AutoTokenizer.from_pretrained(pretrained_model) # load tokenizer
-    uni_prompting = UniversalPrompting(tokenizer, max_prompt_len=config.training.max_prompt_len,
-                                       max_gen_length=config.training.max_gen_length,
-                                       ignore_id=-100, post_num=config.training.post_num) # set up universal prompting for data processing
     
     model = LatentLLaDAModelLM.from_pretrained(pretrained_model, torch_dtype=torch.bfloat16)
     model = model.to(accelerator.device) # load model to accelerator device (GPU/TPU)
 
     mask_id = tokenizer.encode('<|mdm_mask|>')[0]
-    pad_id = tokenizer.encode('<|endoftext|>')[0]
 
 
     # * ---- set up optimizer ----
@@ -175,15 +171,34 @@ def main():
     # * ---- set up dataloader ----
     logger.info("Creating dataloaders and lr_scheduler")
 
-    ARROW_DATA_DIR = config.dataset.arrow_dir
-    logger.info(f"Loading packed PyArrow dataset from {ARROW_DATA_DIR}")
+    with accelerator.main_process_first():
+        # get dataset directories from config
+        arrow_dirs = config.dataset.get("arrow_dirs")
 
-    hf_dataset = load_from_disk(ARROW_DATA_DIR)
-    # PyArrow 原生支持极速打乱
-    hf_dataset = hf_dataset.shuffle(seed=config.training.seed if config.training.seed else 42)
+        # dynamically load multiple datasets and log their sizes
+        loaded_datasets = []
+        for d_path in arrow_dirs:
+            logger.info(f"Loading Arrow dataset from: {d_path}")
+            ds = load_from_disk(d_path)
+            logger.info(f"  -> Loaded {len(ds):,} chunks")
+            loaded_datasets.append(ds)
+
+        # dynamically concatenate datasets if more than one is provided, otherwise use the single loaded dataset
+        if len(loaded_datasets) > 1:
+            logger.info("Concatenating multiple datasets in memory...")
+            hf_dataset = concatenate_datasets(loaded_datasets)
+        else:
+            hf_dataset = loaded_datasets[0]
+            logger.info("Only one dataset provided, skipping concatenation.")
+
+        logger.info(f"Total Combined Dataset Size: {len(hf_dataset):,} chunks")
+        
+        # global shuffle
+        logger.info("Performing Global Shuffle in memory (Zero-Copy)...")
+        hf_dataset = hf_dataset.shuffle(seed=config.training.seed)
 
     def arrow_collate_fn(batch):
-        # 批量把 Arrow 的 List 转化为 PyTorch Tensor
+        # change list of dict to dict of list and convert to tensors
         return {
             "input_ids": torch.tensor([ex["input_ids"] for ex in batch], dtype=torch.long),
             "diffusion_mask": torch.tensor([ex["diffusion_mask"] for ex in batch], dtype=torch.long),
@@ -193,18 +208,28 @@ def main():
     train_dataloader_lm = DataLoader(
         hf_dataset,
         batch_size=config.training.batch_size_lm,
-        shuffle=False, # 数据集已经 shuffle 过了，这里设 False 提高加载效率
+        shuffle=False,
         collate_fn=arrow_collate_fn,
-        num_workers=4, # 开启多进程极速喂数据
+        num_workers=4,
         pin_memory=True,
         drop_last=True
     )
 
+
+    # * ---- prepare model, optimizer, lr_scheduler and dataloader with accelerator ----
+    logger.info("Preparing model, optimizer and dataloaders")
+    model, optimizer, train_dataloader_lm = accelerator.prepare(
+        model, optimizer, train_dataloader_lm
+    )
+
+
     # * ---- set up learning rate scheduler ----
-    total_batch_size_lm = config.training.batch_size_lm * accelerator.num_processes * config.training.gradient_accumulation_steps
-    num_update_steps_per_epoch = math.ceil(len(hf_dataset) / total_batch_size_lm)
+    num_update_steps_per_epoch = math.ceil(
+        len(train_dataloader_lm) / config.training.gradient_accumulation_steps
+    )
     num_train_epochs = config.training.num_train_epochs
-    max_train_steps = num_update_steps_per_epoch * num_train_epochs + 1
+    max_train_steps = num_update_steps_per_epoch * num_train_epochs
+    total_batch_size_lm = config.training.batch_size_lm * accelerator.num_processes * config.training.gradient_accumulation_steps
 
     lr_scheduler = get_scheduler(
         config.lr_scheduler.scheduler,
@@ -216,13 +241,6 @@ def main():
     )
 
 
-    # * ---- prepare model, optimizer, lr_scheduler and dataloader with accelerator ----
-    logger.info("Preparing model, optimizer and dataloaders")
-    #model, optimizer, lr_scheduler = accelerator.prepare(model, optimizer, lr_scheduler)
-    model, optimizer, train_dataloader_lm = accelerator.prepare(
-        model, optimizer, train_dataloader_lm
-    )
-    
     # * ---- Resume from checkpoint ----
     first_epoch = 0
     global_update_step = 0
@@ -238,20 +256,18 @@ def main():
         if path is not None:
             accelerator.print(f"Resuming from checkpoint: {path}")
             accelerator.load_state(path)
-            # Parse epoch from checkpoint name if possible
-            if "checkpoint-epoch-" in str(path):
+            # Parse step from checkpoint name if possible
+            if "checkpoint-step-" in str(path):
                 try:
-                    first_epoch = int(str(path).split("checkpoint-epoch-")[-1])
-                    logger.info(f"Resuming from epoch {first_epoch}")
+                    step_str = str(path).split("checkpoint-step-")[-1]
+                    global_update_step = int(step_str.split("-")[0])
                     
                     # Calculate global_update_step based on resumed epoch
-                    steps_per_epoch = len(train_dataloader_lm) // config.training.gradient_accumulation_steps
-                    global_update_step = first_epoch * steps_per_epoch
-                    logger.info(f"Resuming global step from {global_update_step}")
+                    first_epoch = global_update_step // num_update_steps_per_epoch
+                    logger.info(f"Resuming from global update step {global_update_step}, epoch {first_epoch}")
                     
                 except ValueError:
-                    logger.warning(f"Could not parse epoch from checkpoint path: {path}")
-
+                    logger.warning(f"Could not parse step from checkpoint path: {path}")
 
 
     # * ---- training info logging ----
@@ -263,15 +279,18 @@ def main():
     
     
     # * ---- training forward logit and loss function ----
-    def flowmatch_forward_process(input_ids, probs, t, attention_bias, labels, weighting_strategy="constant"):
+    def flowmatch_forward_process(input_ids, masks, probs, t, attention_bias, labels, weighting_strategy="constant"):
         """
         Computes the Flow Matching loss.
 
         Args:
             input_ids (torch.LongTensor): (Batch, Seq).
+            masks (torch.BoolTensor): (Batch, Seq). True for tokens to be considered.
             probability (torch.Tensor): (Batch, Seq, Vocab).
             t (torch.Tensor): (Batch, 1).
+            attention_bias (torch.Tensor): (Batch, 1, Seq, Seq).
             labels (torch.LongTensor): (Batch, Seq). Indices set to -100 are ignored.
+            weighting_strategy (str): Strategy for weighting the loss across noise levels. Options: "constant", "symmetric", "noise_focused", "clean_focused".
         
         Returns:
             loss_lm (torch.Tensor): Scalar loss.
@@ -300,13 +319,13 @@ def main():
 
         # Calculate accuracy
         preds = torch.argmax(logits, dim=-1) # (B, T)
-        correct_mask = (preds == safe_labels) & p_mask_lm
-        accuracy = correct_mask.sum().float() / p_mask_lm.sum().clamp(min=1).float()
+        correct_mask = (preds == safe_labels) & masks
+        accuracy = correct_mask.sum().float() / masks.sum().clamp(min=1).float()
 
         raw_loss = F.cross_entropy(logits.transpose(1, 2), labels, ignore_index=-100, reduction='none')
-        loss_lm = (raw_loss * p_mask_lm).sum(dim=1)
+        loss_lm = (raw_loss * masks).sum(dim=1)
 
-        mask_num = p_mask_lm.sum(dim=1).clamp(min=1)
+        mask_num = masks.sum(dim=1).clamp(min=1)
         loss_lm = loss_lm / mask_num  # shape: (B,)
 
         safe_t = torch.clamp(t.squeeze(-1), min=1e-5, max=1.0 - 1e-5)
@@ -314,7 +333,7 @@ def main():
         if weighting_strategy == "constant": # no weighting, treat all noise levels equally
             loss_lm = (loss_lm).sum() / B          
         elif weighting_strategy == "symmetric": # peak at middle noise level and downweight both very low and very high noise levels
-            weight = 4.0 * safe_t * (1.0 - safe_t)
+            weight = 1.0 + 4.0 * safe_t * (1.0 - safe_t) # plus 1.0 to prevent no weighting at t=0 and t=1, and 4.0 to make the peak weight close to 2.0 at t=0.5
             weight = weight.view(*weight_shape)
             loss_lm = (loss_lm * weight).sum() / B       
         elif weighting_strategy == "noise_focused": # upweight higher noise levels and downweight lower noise levels
@@ -327,11 +346,7 @@ def main():
             loss_lm = (loss_lm * weight).sum() / B
         else:
             raise ValueError(f"Unknown weighting_strategy: {weighting_strategy}")
-        
-        if accelerator.is_local_main_process:
-            logger.info(f"flowmatch loss: {loss_lm.item()}")
-            logger.info(f"flowmatch accuracy: {accuracy.item()}")
-            
+                    
         return loss_lm, accuracy, logits
 
 
@@ -351,7 +366,7 @@ def main():
         
         # 2. Optimized dot product for continuous hypersphere
         dot = (x0 * x1).sum(dim=-1, keepdim=True)
-        dot = torch.clamp(dot, -1.0 + 1e-6, 1.0 - 1e-6) 
+        dot = torch.clamp(dot, -1.0, 1.0) # clamp for numerical stability in acos
         theta = torch.acos(dot)
 
         # 3. Calculate interpolation coefficients
@@ -379,9 +394,6 @@ def main():
 
 
     # * ---- training loop ----
-    # Counter for actual optimizer updates (Global Steps) is initialized before checkpoint loading
-    if global_update_step is None:
-        global_update_step = 0
     
     # get accurate vocab size
     unwrapped_model = accelerator.unwrap_model(model)
@@ -394,11 +406,27 @@ def main():
         vocab_size = next(iter(unwrapped_model.parameters())).shape[0]
     
     for epoch in range(first_epoch, num_train_epochs):
+
+        if global_update_step >= max_train_steps:
+            logger.info(f"[Epoch loop] Reached max_train_steps ({max_train_steps}). Stopping training early.")
+            break
         
         model.train()
         
+        # resume from checkpoint logic to prevent retraining data
+        if epoch == first_epoch and global_update_step > 0:
+            # calculate how many batches to skip in the dataloader
+            steps_completed_in_epoch = global_update_step % num_update_steps_per_epoch
+            # convert steps to batches (considering gradient accumulation)
+            batches_to_skip = steps_completed_in_epoch * config.training.gradient_accumulation_steps
+            
+            logger.info(f"⏩ Fast-forwarding DataLoader: skipping {batches_to_skip} batches in epoch {epoch}...")
+            active_dataloader = accelerator.skip_first_batches(train_dataloader_lm, batches_to_skip)
+        else:
+            active_dataloader = train_dataloader_lm
+
         progress_bar = tqdm(
-            train_dataloader_lm,
+            active_dataloader, # use the potentially dataloader with skipped batches
             desc=f"Epoch {epoch+1}/{num_train_epochs}",
             disable=not accelerator.is_local_main_process,
             dynamic_ncols=True,    
@@ -409,11 +437,16 @@ def main():
         flowmatch_acc_meter = AverageMeter()
         stage_loss_meters = [AverageMeter() for _ in range(config.training.num_sim_stages)]
         stage_acc_meters = [AverageMeter() for _ in range(config.training.num_sim_stages)]
+        has_logged_pretrain = False # for logging pretrain sample
+        has_logged_sft = False # for logging sft sample
 
         for step, batch in enumerate(progress_bar, start=1):
+
+            if global_update_step >= max_train_steps:
+                logger.info(f"[Batch loop] Reached max_train_steps ({max_train_steps}). Stopping training early.")
+                break
+
             with accelerator.accumulate(model):
-                
-                import contextlib
 
                 # Prepare batch and move to device
                 clean_input_ids = batch["input_ids"].to(accelerator.device)
@@ -422,7 +455,7 @@ def main():
 
                 # form labels with -100 and the input noisy input ids
                 labels = clean_input_ids.clone()
-                labels[diffusion_mask != 1] = -100 # set prompt tokens to -100
+                labels[diffusion_mask != 1] = -100 # set prompt tokens and additional padding tokens to -100 (not including the eos token behind the sequence for a clean ending)
                 p_mask_lm = (diffusion_mask == 1) # p_mask_lm is the tokens we need to generate
 
                 noisy_input_ids = clean_input_ids.clone()
@@ -434,13 +467,13 @@ def main():
 
                 # form attention bias for each batch
                 B_dim, L_dim = clean_input_ids.shape
-                same_doc_mask = (document_ids.unsqueeze(2) == document_ids.unsqueeze(1))
-                valid_tokens = (diffusion_mask != -1) # diffusion mask == -1 representing padding
-                valid_mask_2d = valid_tokens.unsqueeze(2) & valid_tokens.unsqueeze(1)
+                same_doc_mask = (document_ids.unsqueeze(2) == document_ids.unsqueeze(1)) # -> shape (B, L, L), True where tokens belong to the same document
+                valid_tokens = (diffusion_mask != -1) # diffusion mask == -1 representing padding diffusion mask == 0 or 1 included, thus including prompt and response tokens
+                valid_mask_2d = valid_tokens.unsqueeze(2) & valid_tokens.unsqueeze(1) # shape (B, L, L), True where both tokens are valid (not padding)
 
                 attention_mask_2d = same_doc_mask & valid_mask_2d
                 attention_bias = torch.zeros((B_dim, 1, L_dim, L_dim), dtype=model.dtype, device=accelerator.device)
-                attention_bias.masked_fill_(~attention_mask_2d.unsqueeze(1), torch.finfo(model.dtype).min)
+                attention_bias.masked_fill_(~attention_mask_2d.unsqueeze(1), torch.finfo(model.dtype).min) # set -inf where attention is not allowed, 0 where attention is allowed
 
                 # Configure num_sim_stages and sample t for flow matching in this batch
                 num_sim_stages = config.training.num_sim_stages
@@ -453,6 +486,9 @@ def main():
                     # Use cosine spacing to densely sample near 0 and 1, while keeping it strictly bounded in [0, 1]
                     uniform_buckets = torch.linspace(0.0, 1.0, num_sim_stages + 1)
                     buckets = (1.0 - torch.cos(uniform_buckets * torch.pi)) / 2.0
+                elif sim_t_sampling == "middle_focused":
+                    uniform_buckets = torch.linspace(0.0, 1.0, num_sim_stages + 1)
+                    buckets = ((2.0 * uniform_buckets - 1.0)**3 + 1.0) / 2.0
                 else:
                     raise ValueError(f"Unknown sim_t_sampling: {sim_t_sampling}")
                 for i in range(num_sim_stages):
@@ -463,6 +499,88 @@ def main():
                 t_batch = torch.stack(sim_t_list, dim=0)                 
                 # Reverse the order so the simulation strictly follows the denoising trajectory: Noise (t~1) -> Clean (t~0)
                 t_batch = torch.flip(t_batch, dims=[0])
+
+                # ======================== DEBUG LOGGING ========================
+                if DEBUG_MODE and not (has_logged_pretrain and has_logged_sft) and accelerator.is_local_main_process:                    
+                    b_idx = 0 # only inspecting the first sequence in the batch for clarity
+                    diff_mask_list = diffusion_mask[b_idx].tolist()
+
+                    is_sft_sample = 0 in diff_mask_list
+                    
+                    should_log = False
+                    data_type_label = ""
+                    
+                    if is_sft_sample and not has_logged_sft:
+                        should_log = True
+                        has_logged_sft = True
+                        data_type_label = "SFT"
+                    elif not is_sft_sample and not has_logged_pretrain:
+                        should_log = True
+                        has_logged_pretrain = True
+                        data_type_label = "PRETRAIN"
+
+                    if should_log:
+                        logger.info(f"\n" + "="*30 + f"\n🚀 [DEBUG] {data_type_label} DATA INSPECTION (Step {step})\n" + "="*30)
+
+                        seq_len = clean_input_ids.size(1)
+                        doc_ids_list = document_ids[b_idx].tolist()
+                        
+                        # 1. Identify document boundaries based on document_ids and diffusion_mask
+                        boundaries = []
+                        current_doc = doc_ids_list[0]
+                        start_idx = 0
+                        for i in range(1, seq_len):
+                            if doc_ids_list[i] != current_doc:
+                                boundaries.append((current_doc, start_idx, i-1))
+                                current_doc = doc_ids_list[i]
+                                start_idx = i
+                        boundaries.append((current_doc, start_idx, seq_len-1))
+                        
+                        # 2. Print token strings and label statistics for each document
+                        logger.info("📚 4096 Sequence Packing Boundaries:")
+                        for doc, start, end in boundaries:
+                            is_pad = diff_mask_list[start] == -1
+                            doc_type = "PADDING (-1)" if is_pad else f"Document {doc}"
+                            chunk_len = end - start + 1
+                            
+                            chunk_input_ids = clean_input_ids[b_idx][start:end+1]
+                            chunk_labels = labels[b_idx][start:end+1]
+                            
+                            # Decode the first 30 tokens of this chunk for a sanity check, replacing newlines with \n for readability
+                            snippet_ids = chunk_input_ids[:30]
+                            snippet_str = tokenizer.decode(snippet_ids).replace('\n', '\\n')
+                            
+                            valid_labels = (chunk_labels != -100).sum().item()
+                            
+                            logger.info(f"  -> [{doc_type}] [From {start:^4} to {end:^4}] | length: {chunk_len:^4} | Masked Token: {valid_labels}/{chunk_len}")
+                            logger.info(f"     doc begin with: '{snippet_str} ...'")
+
+                        # 3. Print the first 50 raw IDs for visual confirmation of alignment
+                        logger.info("\n🔢 First 50 Tokens' Tensor Details:")
+                        logger.info(f"  Input IDs : {clean_input_ids[b_idx][:50].tolist()}")
+                        logger.info(f"  Labels    : {labels[b_idx][:50].tolist()}")
+                        logger.info(f"  Diff Mask : {diffusion_mask[b_idx][:50].tolist()}")
+                        
+                        # 4. Visualize the attention mask in a compressed ASCII format to confirm the masking pattern
+                        logger.info("\n🌌 Attention Mask 2D visualized via token (compressed):")
+                        
+                        GRID_SIZE = 40 # we will compress the 4096x4096 attention mask into a 40x40 grid for visualization
+                        mask_2d_float = attention_mask_2d[b_idx].float().unsqueeze(0).unsqueeze(0)
+                        
+                        # Use adaptive max pooling to compress the 4096x4096 mask into GRID_SIZE x GRID_SIZE
+                        pooled_mask = F.adaptive_max_pool2d(mask_2d_float, (GRID_SIZE, GRID_SIZE)).squeeze()
+                        
+                        ascii_art = ""
+                        for row in pooled_mask:
+                            # ██ represents at least one valid attention connection in that grid cell, while "  " (two spaces) represents no valid connections (fully masked)
+                            line = "".join(["██" if val > 0.5 else "  " for val in row])
+                            ascii_art += "    " + line + "\n"
+                            
+                        logger.info(f"  (4096x4096 matrix has been adaptively downsampled to {GRID_SIZE}x{GRID_SIZE})\n"
+                                    f"  (██ = Allowed Attention, blank = Completely Blocked by -inf)\n"
+                                    f"{ascii_art}")
+
+                        logger.info("="*70 + "\n")
 
                 # The Simulation Loop
                 batch_flowmatch_loss = 0.0
@@ -480,8 +598,10 @@ def main():
                         # Forward pass
                         stage_loss, stage_acc, stage_logits = flowmatch_forward_process(
                             input_ids=noisy_input_ids,
+                            masks=p_mask_lm,
                             probs=curr_start_probs,
                             t=t_current,
+                            attention_bias=attention_bias,
                             labels=labels,
                             weighting_strategy=config.training.flowmatch_loss_weighting_strategy
                         )
@@ -561,7 +681,7 @@ def main():
 
                     # Save checkpoint logic
                     save_steps = config.training.get("save_steps", 2000) # 默认 2000 步存一次
-                    if global_update_step % save_steps == 0:
+                    if global_update_step % save_steps == 0 and global_update_step > 0:
                         accelerator.wait_for_everyone()
                         step_output_dir = Path(config.experiment.output_dir) / f"checkpoint-step-{global_update_step}"
                         accelerator.save_state(step_output_dir)
@@ -575,10 +695,11 @@ def main():
                                 safe_serialization=True
                             )
                             tokenizer.save_pretrained(step_output_dir)
-                            logger.info(f"Step {global_update_step} checkpoint saved to {step_output_dir}")
-            
+                            logger.info(f"Epoch {epoch+1} Step {global_update_step} checkpoint saved to {step_output_dir}")
+                                    
         # Save checkpoint at the end of each epoch
-        output_dir = Path(config.experiment.output_dir) / f"checkpoint-epoch-{epoch+1}"
+        accelerator.wait_for_everyone() # Ensure all processes have finished saving before starting next epoch or ending
+        output_dir = Path(config.experiment.output_dir) / f"checkpoint-step-{global_update_step}-epoch-{epoch+1}-finished"
         accelerator.save_state(output_dir)
         if accelerator.is_main_process:
             unwrapped_model = accelerator.unwrap_model(model)
@@ -590,9 +711,7 @@ def main():
                 safe_serialization=True
             )
             tokenizer.save_pretrained(output_dir)
-        logger.info(f"Epoch {epoch+1} checkpoint saved to {output_dir}")
-
-        accelerator.wait_for_everyone() # Ensure all processes have finished saving before starting next epoch or ending
+        logger.info(f"Epoch {epoch+1} finished. Checkpoint saved to {output_dir}")
 
     accelerator.end_training()
 

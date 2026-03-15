@@ -34,8 +34,8 @@ export NCCL_IB_DISABLE=1
 # Using the configuration for 1 node with 4 GPUs (matching the SBATCH request)
 # Ensure the accelerate config matches the resources requested
 ACCELERATE_CONFIG="accelerate_configs/1_node_4_gpus_deepspeed_zero2.yaml"
-SCRIPT="train/cpt_latent_llada_w_sim.py"
-CONFIG="configs/cpt_latent_llada_w_sim.yaml"
+SCRIPT="train/cpt_latent_llada_fullscale.py"
+CONFIG="configs/cpt_latent_llada_fullscale.yaml"
 
 echo "Starting training with config: $CONFIG"
 
