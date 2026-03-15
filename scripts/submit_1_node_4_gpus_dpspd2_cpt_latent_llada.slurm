@@ -4,7 +4,7 @@
 #SBATCH --account=aszalay1_ssci
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
-#SBATCH --time=24:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --mem=512G
 #SBATCH --exclude=c001,h07
 
@@ -27,8 +27,6 @@ export WANDB_MODE=offline
 export CUDA_LAUNCH_BLOCKING=1
 export TORCH_USE_CUDA_DSA=1
 export NCCL_DEBUG=INFO
-export NCCL_P2P_DISABLE=1
-export NCCL_IB_DISABLE=1
 
 # run script
 # Using the configuration for 1 node with 4 GPUs (matching the SBATCH request)
