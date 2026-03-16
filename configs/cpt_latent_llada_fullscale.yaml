@@ -19,8 +19,8 @@ dataset:
 
 training:
     gradient_checkpointing_enable: False # if the sequence is very large, set as True
-    gradient_accumulation_steps: 32
-    batch_size_lm: 2 # the total batch size is num_node * num_gpu_per_node * gradient_accumulation_steps * batch_size_lm
+    gradient_accumulation_steps: 64
+    batch_size_lm: 1 # the total batch size is num_node * num_gpu_per_node * gradient_accumulation_steps * batch_size_lm
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 32

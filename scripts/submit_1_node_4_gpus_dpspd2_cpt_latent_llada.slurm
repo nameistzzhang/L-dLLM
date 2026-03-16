@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sft_llada
-#SBATCH --partition=h100
+#SBATCH --partition=a100
 #SBATCH --account=aszalay1_ssci
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
