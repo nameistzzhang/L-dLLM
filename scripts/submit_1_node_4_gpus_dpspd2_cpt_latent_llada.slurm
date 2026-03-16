@@ -31,6 +31,7 @@ export NCCL_IB_DISABLE=1
 export TORCH_EXTENSIONS_DIR="/scratch/aszalay1/tianze/L-dLLM/.cache/torch_extensions"
 export TRITON_CACHE_DIR="/scratch/aszalay1/tianze/L-dLLM/.cache/triton"
 export HF_HOME="/scratch/aszalay1/tianze/L-dLLM/.cache/huggingface"
+export DEBUG_MODE="1"
 
 mkdir -p $TORCH_EXTENSIONS_DIR
 mkdir -p $TRITON_CACHE_DIR

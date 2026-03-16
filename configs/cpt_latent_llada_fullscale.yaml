@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: False
-  run_name: "cpt_latent_llada_w-sim-4_middle-focused-sampling_symmetric-weighting_fullscale_260315_2020" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_w-sim-4_middle-focused-sampling_symmetric-weighting_fullscale_try-bs_260316_1325" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
@@ -19,8 +19,8 @@ dataset:
 
 training:
     gradient_checkpointing_enable: False # if the sequence is very large, set as True
-    gradient_accumulation_steps: 64
-    batch_size_lm: 1 # the total batch size is num_node * num_gpu_per_node * gradient_accumulation_steps * batch_size_lm
+    gradient_accumulation_steps: 32
+    batch_size_lm: 2 # the total batch size is num_node * num_gpu_per_node * gradient_accumulation_steps * batch_size_lm
     mixed_precision: "bf16"
     enable_tf32: True
     seed: 32
