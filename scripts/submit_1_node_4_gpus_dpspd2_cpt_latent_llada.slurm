@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sft_llada
-#SBATCH --partition=h100
+#SBATCH --partition=a100
 #SBATCH --account=aszalay1_ssci
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=24
@@ -27,6 +27,14 @@ export WANDB_MODE=offline
 export CUDA_LAUNCH_BLOCKING=1
 export TORCH_USE_CUDA_DSA=1
 export NCCL_DEBUG=INFO
+export NCCL_IB_DISABLE=1
+export TORCH_EXTENSIONS_DIR="/scratch/aszalay1/tianze/L-dLLM/.cache/torch_extensions"
+export TRITON_CACHE_DIR="/scratch/aszalay1/tianze/L-dLLM/.cache/triton"
+export HF_HOME="/scratch/aszalay1/tianze/L-dLLM/.cache/huggingface"
+
+mkdir -p $TORCH_EXTENSIONS_DIR
+mkdir -p $TRITON_CACHE_DIR
+mkdir -p $HF_HOME
 
 # run script
 # Using the configuration for 1 node with 4 GPUs (matching the SBATCH request)

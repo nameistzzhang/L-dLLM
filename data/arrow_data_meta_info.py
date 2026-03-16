@@ -1,6 +1,6 @@
 from datasets import load_from_disk
 
-ARROW_DIR = "/scratch/aszalay1/tianze/cpt_data/3b_pyarrow/"
+ARROW_DIR = "/scratch/aszalay1/tianze/cpt_data/fineweb_pyarrow/"
 
 print(f"Loading Arrow dataset from {ARROW_DIR}...")
 dataset = load_from_disk(ARROW_DIR)
