@@ -1379,7 +1379,7 @@ class LatentLLaDAModel(nn.Module):
                 mask_len = attention_mask.shape[-1]
             elif past_key_values is not None:
                 mask_len = past_key_values[0][0].shape[-2] + seq_len
-            attention_bias = attention_bias[:, :, :mask_len, :mask_len].to(dtype=torch.float)
+            attention_bias = attention_bias[:, :, :mask_len, :mask_len].to(dtype=x.dtype)
 
             # Add in the masking bias.
             if attention_mask is not None:

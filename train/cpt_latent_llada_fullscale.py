@@ -19,6 +19,7 @@ import torch.nn.functional as F
 from tqdm.auto import tqdm
 from datasets import load_from_disk, concatenate_datasets
 import contextlib
+from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from train.utils import get_config, flatten_omega_conf, AverageMeter
 from models import LatentLLaDAModelLM
@@ -596,15 +597,18 @@ def main():
 
                     with sync_context:
                         # Forward pass
-                        stage_loss, stage_acc, stage_logits = flowmatch_forward_process(
-                            input_ids=noisy_input_ids,
-                            masks=p_mask_lm,
-                            probs=curr_start_probs,
-                            t=t_current,
-                            attention_bias=attention_bias,
-                            labels=labels,
-                            weighting_strategy=config.training.flowmatch_loss_weighting_strategy
-                        )
+                        allowed_backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
+                        
+                        with sdpa_kernel(allowed_backends):
+                            stage_loss, stage_acc, stage_logits = flowmatch_forward_process(
+                                input_ids=noisy_input_ids,
+                                masks=p_mask_lm,
+                                probs=curr_start_probs,
+                                t=t_current,
+                                attention_bias=attention_bias,
+                                labels=labels,
+                                weighting_strategy=config.training.flowmatch_loss_weighting_strategy
+                            )
 
                         # Scale the loss to prevent magnitude explosion across multiple steps
                         scaled_stage_loss = stage_loss / num_sim_stages
