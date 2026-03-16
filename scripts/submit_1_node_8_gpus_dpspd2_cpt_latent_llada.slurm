@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=sft_llada
-#SBATCH --partition=a100
+#SBATCH --partition=h100
 #SBATCH --account=aszalay1_ssci
 #SBATCH --gres=gpu:8
 #SBATCH --cpus-per-task=24
-#SBATCH --time=24:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --mem=512G
-#SBATCH --exclude=c001
+#SBATCH --exclude=c001,h07
 
 # environment setup
 module purge
@@ -27,15 +27,22 @@ export WANDB_MODE=offline
 export CUDA_LAUNCH_BLOCKING=1
 export TORCH_USE_CUDA_DSA=1
 export NCCL_DEBUG=INFO
-export NCCL_P2P_DISABLE=1
 export NCCL_IB_DISABLE=1
+export TORCH_EXTENSIONS_DIR="/scratch/aszalay1/tianze/L-dLLM/.cache/torch_extensions"
+export TRITON_CACHE_DIR="/scratch/aszalay1/tianze/L-dLLM/.cache/triton"
+export HF_HOME="/scratch/aszalay1/tianze/L-dLLM/.cache/huggingface"
+export DEBUG_MODE="1"
+
+mkdir -p $TORCH_EXTENSIONS_DIR
+mkdir -p $TRITON_CACHE_DIR
+mkdir -p $HF_HOME
 
 # run script
 # Using the configuration for 1 node with 8 GPUs (matching the SBATCH request)
 # Ensure the accelerate config matches the resources requested
 ACCELERATE_CONFIG="accelerate_configs/1_node_8_gpus_deepspeed_zero2.yaml"
-SCRIPT="train/cpt_latent_llada_w_sim.py"
-CONFIG="configs/cpt_latent_llada_w_sim.yaml"
+SCRIPT="train/cpt_latent_llada_fullscale.py"
+CONFIG="configs/cpt_latent_llada_fullscale.yaml"
 
 echo "Starting training with config: $CONFIG"
 

@@ -1,7 +1,7 @@
 wandb:
   entity: null
   resume: False
-  run_name: "cpt_latent_llada_w-sim-4_middle-focused-sampling_symmetric-weighting_fullscale_try-bs_260316_1325" # the name of this run in wandb, can be different from experiment.project
+  run_name: "cpt_latent_llada_w-sim-4_middle-focused-sampling_symmetric-weighting_fullscale_8*h100-3d_260316_1343" # the name of this run in wandb, can be different from experiment.project
 
 
 experiment:
